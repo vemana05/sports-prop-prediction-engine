@@ -208,16 +208,27 @@ Shared:
 - Home/away, rest days, travel miles, timezone shift, altitude
 - Opponent defense vs. position (rolling), opponent pace
 - Player injury status + games since return
-- **Teammate availability:** who's out, and that teammate's measured effect on this player (from on/off data)
+- **Teammate availability:** who's out (from injury data — see [DEFERRED] below for the on/off *effect size* piece of this)
 - Optional LLM news flags (minutes restriction, role change)
 
 NBA:
 - Projected minutes (separate model; the most important input)
 - Usage rate, shots/min, touches, potential assists, rebound chances (tracking)
-- On/off splits from pbpstats for key teammates
-- Possessions-based pace for both teams
 - Referee crew foul/FT tendencies
 - Back-to-back, 3-in-4
+- **[DEFERRED] On/off splits from pbpstats for key teammates, possessions-based pace for both teams:**
+  Phase 1 ingested `nba_possessions` for 207 games (~42,275 possession rows), all from
+  the start of the 2025-26 season, as a pipeline validation sample — not a
+  training-sized dataset. That's ~3% of the 6,150 games across all 5 backfilled
+  seasons, and none of it covers 2021-22 through 2024-25 at all, so most
+  team/teammate pairings have zero possessions. On/off splits need every teammate
+  pair to have enough shared/unshared possessions to be statistically meaningful,
+  which this sample can't support. Don't build these two features until
+  `nba_possessions` has been backfilled across full seasons (a separate, explicit job —
+  see `backend/ingest/nba_pbpstats.py`'s module docstring for the live-data-provider
+  workaround this ingestion goes through). Phase 2's feature set and models should be
+  designed to work without them; add them in a later phase once the possession backfill
+  exists and has been validated.
 
 NFL:
 - Snap share, route participation, target share, air-yards share, carry share, red-zone usage
@@ -244,7 +255,7 @@ NFL:
 - Brier score, log loss, calibration plots
 - Compare against the book's no-vig probability on the same props; if the model is worse, the UI says so
 - Simulated ROI and **CLV** using historical odds
-- **Feature ablation report:** retrain with each source group removed (weather, refs, on/off, tracking, news). Keep a source only if it measurably improves calibration. More sources ≠ better unless proven.
+- **Feature ablation report:** retrain with each source group removed (weather, refs, tracking, news, and on/off once it's no longer deferred — see Section 5.2). Keep a source only if it measurably improves calibration. More sources ≠ better unless proven.
 - Results saved to `reports/` and shown on the Model Performance page
 
 ### 5.5 Retraining

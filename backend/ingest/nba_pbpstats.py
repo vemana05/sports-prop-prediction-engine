@@ -23,9 +23,14 @@ writing, which is worth recording so nobody "fixes" this back:
   `LiveStartOfPeriod` event with no `team_id`) is skipped and logged rather
   than aborting the game.
 
-Deriving on/off splits and possession-based pace from this table is Phase 2
-feature-engineering work (aggregate on lineup_offense/lineup_defense), not
-ingestion.
+On/off splits and possession-based pace are DEFERRED past Phase 2 (spec
+Section 5.2): this module has only been run against 207 games so far (all
+from the start of 2025-26 — a validation-scale run plus one accidental
+partial full-season run that got left in place since the data is correct,
+just incomplete), out of 6,150 games across 5 seasons. That's nowhere near
+enough possessions per teammate pair, across enough of the league, to
+estimate an on/off effect. Don't build those features until a full-season
+possession backfill exists and has been validated.
 
 Caching: the live web loader writes `<dir>/pbp/live_<game_id>.json` on
 success, but only if `<dir>/pbp` already exists — pbpstats doesn't create it
@@ -87,7 +92,7 @@ def _load_possessions(game_id: str) -> list:
     return retry(_call, what=f"pbpstats.Game({game_id})")
 
 
-def _possession_rows(game_id: str, season: str, possessions: list) -> list[tuple]:
+def _possession_rows(game_id: str, season: str, possessions: list, game_date=None) -> list[tuple]:
     now = utcnow()
     rows = []
     skipped = 0
@@ -114,7 +119,7 @@ def _possession_rows(game_id: str, season: str, possessions: list) -> list[tuple
                     str(offense_team_id) if offense_team_id else None,
                     str(defense_team_id) if defense_team_id else None,
                     p.start_time, p.end_time, p.start_score_margin,
-                    lineup_offense, lineup_defense, now,
+                    lineup_offense, lineup_defense, game_date, now,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - one bad possession shouldn't drop the game
@@ -132,16 +137,26 @@ def _write(conn: duckdb.DuckDBPyConnection, rows: list[tuple]) -> int:
         """
         INSERT INTO nba_possessions
             (game_id, season, possession_number, period, offense_team_id, defense_team_id,
-             start_time, end_time, start_score_margin, lineup_offense, lineup_defense, ingested_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             start_time, end_time, start_score_margin, lineup_offense, lineup_defense,
+             source_published_at, ingested_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (game_id, possession_number) DO UPDATE SET
             offense_team_id = excluded.offense_team_id, defense_team_id = excluded.defense_team_id,
             lineup_offense = excluded.lineup_offense, lineup_defense = excluded.lineup_defense,
-            ingested_at = excluded.ingested_at
+            source_published_at = excluded.source_published_at, ingested_at = excluded.ingested_at
         """,
         rows,
     )
     return len(rows)
+
+
+def _game_dates(conn: duckdb.DuckDBPyConnection, game_ids: list[str]) -> dict:
+    if not game_ids:
+        return {}
+    rows = conn.execute(
+        "SELECT DISTINCT game_id, game_date FROM nba_player_games WHERE game_id IN ?", [game_ids]
+    ).fetchall()
+    return {r[0]: r[1] for r in rows}
 
 
 def ingest_season(conn: duckdb.DuckDBPyConnection, season: str, max_games: int | None = None) -> int:
@@ -155,10 +170,12 @@ def ingest_season(conn: duckdb.DuckDBPyConnection, season: str, max_games: int |
         game_ids = game_ids[:max_games]
     logger.info("pbpstats: processing %d games for %s", len(game_ids), season)
 
+    game_dates = _game_dates(conn, game_ids)
     total = 0
     for i, game_id in enumerate(game_ids):
         possessions = _load_possessions(game_id)
-        total += _write(conn, _possession_rows(game_id, season, possessions))
+        rows = _possession_rows(game_id, season, possessions, game_date=game_dates.get(game_id))
+        total += _write(conn, rows)
         if (i + 1) % 10 == 0:
             logger.info("pbpstats: %d/%d games processed", i + 1, len(game_ids))
     logger.info("pbpstats: wrote %d possession rows for %s (%d games)", total, season, len(game_ids))

@@ -11,15 +11,19 @@ Importing `nbainjuries` starts a JVM immediately (via jpype/tabula-py), so
 this module only runs where a JRE is installed — the backend Docker image,
 not necessarily the host.
 
-Note on validation timing: today (see module-level TODAY) falls in the NBA
-offseason between the 2025-26 season and the 2026-27 tip-off, so there is no
-*current* report to fetch. `run()` therefore validates against a known
-in-season timestamp from the most recently completed season rather than
-scanning back from "now" (which could require thousands of 30-minute steps
-to reach the last live report). Pulling the full historical archive of
-15-minute snapshots back to 2021-22 is a separate, much larger job for when
-the walk-forward backtest (Phase 2) needs point-in-time injury history —
-not part of Phase 1 validation.
+Note on validation timing: `run()`'s single-report validation pull validates
+against a known in-season timestamp from the 2025-26 season rather than
+scanning back from "now", since today falls in the NBA offseason between the
+2025-26 season and the 2026-27 tip-off — there's no *current* report to find,
+and scanning back from "now" could take thousands of 30-minute steps to
+reach the last live report.
+
+`backfill_game_days()` is the real historical pull: one pre-game snapshot
+per game day, for every day in `nba_player_games` (all 5 backfilled
+seasons) — what the Phase 2 walk-forward backtest actually needs. It does
+NOT pull the full 15-minute-snapshot archive (`backfill_range()` does that,
+exhaustively, for a narrower date range if ever needed) — one report per day
+is enough to know who was hurt before that day's games.
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ import duckdb
 import pandas as pd
 from nbainjuries import injury
 
-from backend.db import get_connection
+from backend.db import get_connection, next_log_id
 from backend.ingest.util import IngestResult, logger, retry, utcnow
 
 # nbainjuries compares the timestamp you pass against its own naive (no
@@ -71,6 +75,11 @@ def fetch_report(timestamp: datetime) -> pd.DataFrame:
     # let it violate the NOT NULL constraint.
     out = out[out["player_name_raw"].notna() & (out["player_name_raw"].str.strip() != "")]
     out["game_date"] = pd.to_datetime(out["game_date"], errors="coerce").dt.date
+    # PDF extraction also occasionally yields two rows for the same player,
+    # e.g. a status line split across pages — (player_name_raw, team) is the
+    # PK's grain per report, and a duplicate within one report is a parsing
+    # artifact, not two real facts, so keep the last (most-processed) one.
+    out = out.drop_duplicates(subset=["player_name_raw", "team"], keep="last")
     return out
 
 
@@ -115,6 +124,96 @@ def run(conn: duckdb.DuckDBPyConnection | None = None) -> IngestResult:
             conn.close()
 
 
+# Reports are typically published around these times (US/Eastern, naive —
+# see the note above `VALIDATION_TIMESTAMP`). We only need one valid,
+# pre-game snapshot per game day for the walk-forward backtest, not every
+# slot, so try the closest-to-tipoff time first and fall back earlier in
+# the day rather than scanning every 15/30-minute step.
+_CANDIDATE_REPORT_TIMES = [(17, 30), (12, 0), (8, 30), (20, 30)]
+
+
+def game_days(conn: duckdb.DuckDBPyConnection, seasons: list[str]) -> list:
+    placeholders = ",".join(["?"] * len(seasons))
+    rows = conn.execute(
+        f"SELECT DISTINCT game_date FROM nba_player_games WHERE season IN ({placeholders}) ORDER BY game_date",
+        seasons,
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def backfill_game_days(seasons: list[str] | None = None) -> IngestResult:
+    """Pull at least one pre-game injury report snapshot for every day an
+    NBA game was played in `seasons` (default: every season already in
+    nba_player_games). This is what the Phase 2 walk-forward backtest
+    actually needs — a point-in-time view of who was hurt before that day's
+    games — and is far cheaper than `backfill_range`'s exhaustive
+    every-15-minutes scan.
+    """
+    conn = get_connection()
+    started = utcnow()
+    try:
+        if seasons is None:
+            seasons = [r[0] for r in conn.execute("SELECT DISTINCT season FROM nba_player_games ORDER BY season").fetchall()]
+        days = game_days(conn, seasons)
+        season_by_date = dict(conn.execute("SELECT DISTINCT game_date, season FROM nba_player_games").fetchall())
+        logger.info("nbainjuries backfill: %d game days across seasons %s", len(days), seasons)
+
+        rows_by_season: dict[str, int] = {s: 0 for s in seasons}
+        found_days = 0
+        missing_days = []
+        total_rows = 0
+
+        for i, d in enumerate(days):
+            timestamp = None
+            for h, m in _CANDIDATE_REPORT_TIMES:
+                candidate = datetime(d.year, d.month, d.day, h, m)
+                if retry(lambda c=candidate: injury.check_reportvalid(c), what=f"check_reportvalid({candidate})"):
+                    timestamp = candidate
+                    break
+            if timestamp is None:
+                missing_days.append(d)
+                continue
+
+            df = fetch_report(timestamp)
+            rows = _write(conn, df, timestamp)
+            total_rows += rows
+            found_days += 1
+            season = season_by_date.get(d)
+            if season:
+                rows_by_season[season] = rows_by_season.get(season, 0) + rows
+
+            if (i + 1) % 25 == 0:
+                logger.info(
+                    "nbainjuries backfill: %d/%d days processed (%d found, %d rows so far)",
+                    i + 1, len(days), found_days, total_rows,
+                )
+
+        logger.info(
+            "nbainjuries backfill complete: %d/%d days had a report (%d missing), %d total rows",
+            found_days, len(days), len(missing_days), total_rows,
+        )
+        # This bypasses the runner's per-source _run_source() logging (it's a
+        # standalone, explicitly-triggered backfill, not a routine ingestion
+        # pass), so log it here directly — otherwise the freshness check has
+        # no idea this data is current and reports "never_run".
+        conn.execute(
+            "INSERT INTO ingestion_log VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [next_log_id(conn), "nbainjuries", "success", total_rows, started, utcnow(), None, None],
+        )
+        return IngestResult(
+            rows_written=total_rows,
+            notes={
+                "days_total": len(days),
+                "days_with_report": found_days,
+                "days_missing": len(missing_days),
+                "missing_sample": [str(d) for d in missing_days[:15]],
+                "rows_by_season": rows_by_season,
+            },
+        )
+    finally:
+        conn.close()
+
+
 def backfill_range(start: datetime, end: datetime, step_minutes: int = 30) -> IngestResult:
     """Pull every valid report in [start, end]. Meant for the Phase 2
     backtest's point-in-time injury history, not routine ingestion."""
@@ -135,5 +234,15 @@ def backfill_range(start: datetime, end: datetime, step_minutes: int = 30) -> In
 
 
 if __name__ == "__main__":
-    result = run()
-    print(f"nbainjuries validation ingest complete: {result.rows_written} rows ({result.notes})")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Official NBA injury report ingestion")
+    parser.add_argument("--backfill-game-days", action="store_true", help="One pre-game snapshot per game day across all ingested seasons")
+    args = parser.parse_args()
+
+    if args.backfill_game_days:
+        result = backfill_game_days()
+        print(f"nbainjuries game-day backfill complete: {result.rows_written} rows ({result.notes})")
+    else:
+        result = run()
+        print(f"nbainjuries validation ingest complete: {result.rows_written} rows ({result.notes})")

@@ -33,6 +33,24 @@ def main() -> None:
     ).fetchone()
     print(f"  seasons: {row[0]}, games: {row[1]}, players: {row[2]}, date range: {row[3]} to {row[4]}")
 
+    print("\n=== nba_injuries game-day coverage ===")
+    rows = conn.execute(
+        """
+        WITH game_days AS (
+            SELECT DISTINCT season, game_date FROM nba_player_games
+        ), report_days AS (
+            SELECT DISTINCT CAST(report_time AS DATE) AS report_date FROM nba_injuries
+        )
+        SELECT g.season, COUNT(DISTINCT g.game_date) AS game_days,
+               COUNT(DISTINCT r.report_date) AS days_with_report
+        FROM game_days g
+        LEFT JOIN report_days r ON r.report_date = g.game_date
+        GROUP BY g.season ORDER BY g.season
+        """
+    ).fetchall()
+    for season, game_days, days_with_report in rows:
+        print(f"  {season}: {days_with_report}/{game_days} game days have a pre-game injury snapshot")
+
     print("\n=== xref match rate ===")
     total_sleeper = conn.execute("SELECT COUNT(*) FROM sleeper_players").fetchone()[0]
     matched = conn.execute("SELECT COUNT(*) FROM player_xref WHERE sleeper_id IS NOT NULL").fetchone()[0]

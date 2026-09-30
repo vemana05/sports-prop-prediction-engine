@@ -29,6 +29,16 @@ CREATE TABLE IF NOT EXISTS ingestion_log (
 
 CREATE SEQUENCE IF NOT EXISTS ingestion_log_seq START 1;
 
+-- IMPORTANT for Phase 2 feature engineering: this table comes from nba_api's
+-- LeagueGameLog, which only includes players who recorded a box score line.
+-- A player who checked in — even for a few seconds, rounding to minutes=0 —
+-- DOES get a row here (verified: e.g. a player with a real "0:17" appearance
+-- shows up with minutes=0). A player marked "DNP - Coach's Decision" or
+-- inactive, who never checked in, gets NO row at all — there's no way to
+-- distinguish "not on the active roster that game" from "on the roster, sat
+-- the whole game" without joining a separate full-roster/inactive-list
+-- source. Don't treat a missing row as "0 minutes" in rolling-average or
+-- rest-day features without accounting for this gap.
 CREATE TABLE IF NOT EXISTS nba_player_games (
     player_id_nba       VARCHAR NOT NULL,
     player_name         VARCHAR NOT NULL,
@@ -54,9 +64,12 @@ CREATE TABLE IF NOT EXISTS nba_player_games (
 -- Possession-level data from pbpstats (live-data provider — see
 -- backend/ingest/nba_pbpstats.py for why: pbpstats' stats_nba and data_nba
 -- providers both hit dead NBA endpoints as of this writing). Only fields
--- verified safe to read for every possession are stored; on/off splits and
--- possession-based pace are derived from this in Phase 2 feature engineering
--- by aggregating on lineup_offense/lineup_defense.
+-- verified safe to read for every possession are stored. On/off splits and
+-- possession-based pace are DEFERRED past Phase 2 (see spec Section 5.2) —
+-- only ~207 games (all early 2025-26) are ingested so far, out of 6,150
+-- games across 5 seasons, nowhere near enough for statistically meaningful
+-- on/off pairs. Build those from lineup_offense/lineup_defense once a
+-- full-season possession backfill exists.
 CREATE TABLE IF NOT EXISTS nba_possessions (
     game_id             VARCHAR NOT NULL,
     season              VARCHAR NOT NULL,
@@ -69,9 +82,17 @@ CREATE TABLE IF NOT EXISTS nba_possessions (
     start_score_margin  INTEGER,   -- offense team's point differential at possession start
     lineup_offense      VARCHAR,   -- 5 player ids, dash-separated
     lineup_defense      VARCHAR,
+    source_published_at DATE,      -- the game's date (from nba_player_games), for point-in-time queries
     ingested_at         TIMESTAMP NOT NULL,
     PRIMARY KEY (game_id, possession_number)
 );
+
+-- Migration for tables created before source_published_at existed (DuckDB
+-- has no "ADD COLUMN IF NOT EXISTS" pre-table-creation ordering issue since
+-- this runs after the CREATE TABLE IF NOT EXISTS above either creates the
+-- table fresh with the column already present, or leaves an existing table
+-- untouched for this ALTER to extend).
+ALTER TABLE nba_possessions ADD COLUMN IF NOT EXISTS source_published_at DATE;
 
 CREATE TABLE IF NOT EXISTS nba_injuries (
     player_name_raw      VARCHAR NOT NULL,
