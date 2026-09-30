@@ -35,6 +35,27 @@
   license: "MIT; source data is NBA official injury reports"
   module: backend.ingest.injuries_nba_official
 
+- name: nba_schedule
+  league: nba
+  provides: [schedule, tipoff_times]
+  priority: primary
+  refresh: "daily"
+  rate_limit_per_min: 20
+  auth_env_var: null
+  license: "unofficial stats.nba.com wrapper; no redistribution terms published"
+  module: backend.ingest.nba_schedule
+
+- name: nba_box_status
+  league: nba
+  provides: [player_availability]
+  priority: primary
+  refresh: "daily"
+  rate_limit_per_min: 20
+  auth_env_var: null
+  license: "unofficial stats.nba.com wrapper; no redistribution terms published"
+  module: backend.ingest.nba_box_status
+  note: "run() is resumable/incremental (only processes game_ids not yet in nba_box_status); fine for the daily runner once the initial backfill is done"
+
 - name: sleeper
   league: [nba, nfl]
   provides: [player_status, depth_chart, trending]

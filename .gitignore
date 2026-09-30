@@ -25,3 +25,4 @@ out/
 
 # os
 .DS_Store
+.claude/

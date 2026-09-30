@@ -1,8 +1,10 @@
 FROM python:3.11-slim
 
-# nbainjuries -> tabula-py needs a JRE to read the NBA's PDF injury reports
+# nbainjuries -> tabula-py needs a JRE to read the NBA's PDF injury reports.
+# lightgbm's compiled extension needs libgomp (OpenMP) at runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     default-jre-headless \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

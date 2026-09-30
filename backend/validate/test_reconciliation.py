@@ -2,6 +2,8 @@
 No duplicate player-games, stat ranges within physically plausible bounds.
 """
 
+from backend.ingest.injuries_nba_official import find_games_missing_pretip_report
+
 
 def test_no_duplicate_player_games(conn):
     dupes = conn.execute(
@@ -87,3 +89,14 @@ def test_injury_reports_cover_almost_every_game_day(conn):
     total, covered = row
     rate = covered / total if total else 0
     assert rate >= 0.95, f"only {covered}/{total} game days ({rate:.1%}) have an injury snapshot"
+
+
+def test_every_game_has_a_pretip_injury_report(conn):
+    """Stronger than the day-level check above: for every game individually
+    (using nba_schedule's actual tip-off time), at least one ingested injury
+    report row must have a matching `game_date` and a `report_time` before
+    that game's tip-off — not just any report fetched that calendar day. A
+    report fetched the day before often already covers the next day's games,
+    so this is a real per-game check, not the same thing as day coverage."""
+    missing = find_games_missing_pretip_report(conn)
+    assert missing == [], f"{len(missing)} games have no valid pre-tip-off injury report: {missing[:10]}"

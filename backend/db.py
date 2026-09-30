@@ -107,6 +107,54 @@ CREATE TABLE IF NOT EXISTS nba_injuries (
     PRIMARY KEY (player_name_raw, team, report_time)
 );
 
+-- Tip-off times (Section 4.4 point-in-time correctness): lets feature/
+-- injury-matching code check whether a given report_time is actually
+-- before a specific game started, not just on the same calendar day.
+CREATE TABLE IF NOT EXISTS nba_schedule (
+    game_id        VARCHAR PRIMARY KEY,
+    season         VARCHAR NOT NULL,
+    game_date      DATE NOT NULL,
+    home_team_id   VARCHAR NOT NULL,
+    away_team_id   VARCHAR NOT NULL,
+    tip_utc        TIMESTAMPTZ NOT NULL,
+    ingested_at    TIMESTAMP NOT NULL
+);
+
+-- Full team roster per game (played AND DNP/inactive) from nba_api's
+-- BoxScoreTraditionalV3 — the only source we have that lists players who
+-- did NOT play, with a comment explaining why (e.g. "DNP - Coach's
+-- Decision", "NOT WITH TEAM", or blank for a true inactive/injury
+-- designation). This is the ground truth `nba_player_availability` (below)
+-- is built from — nba_player_games alone can't tell "DNP" from "not on the
+-- roster" (see the note on nba_player_games above).
+CREATE TABLE IF NOT EXISTS nba_box_status (
+    game_id          VARCHAR NOT NULL,
+    team_id          VARCHAR NOT NULL,
+    player_id_nba    VARCHAR NOT NULL,
+    player_name_raw  VARCHAR,
+    minutes_raw      VARCHAR,   -- "MM:SS" if played, NULL/blank if not
+    comment          VARCHAR,   -- DNP/inactive reason if not played, blank if played
+    ingested_at      TIMESTAMP NOT NULL,
+    PRIMARY KEY (game_id, player_id_nba)
+);
+
+-- Derived, point-in-time player availability per team-game (Section 5.2
+-- "games since return" / teammate-availability features read this, not
+-- nba_player_games directly). Built by backend/ingest/nba_availability.py
+-- from nba_box_status (played vs. DNP) joined against nba_injuries (was a
+-- DNP player listed on the injury report published before this game's
+-- tip-off, per nba_schedule?).
+CREATE TABLE IF NOT EXISTS nba_player_availability (
+    game_id          VARCHAR NOT NULL,
+    season           VARCHAR NOT NULL,
+    team_id          VARCHAR NOT NULL,
+    player_id_nba    VARCHAR NOT NULL,
+    status           VARCHAR NOT NULL,   -- played | dnp_listed_injury_report | dnp_other
+    detail           VARCHAR,            -- box score comment or injury report status/reason
+    ingested_at      TIMESTAMP NOT NULL,
+    PRIMARY KEY (game_id, player_id_nba)
+);
+
 CREATE TABLE IF NOT EXISTS sleeper_players (
     sleeper_id           VARCHAR PRIMARY KEY,
     full_name            VARCHAR,

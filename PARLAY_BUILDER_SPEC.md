@@ -261,6 +261,44 @@ NFL:
 ### 5.5 Retraining
 Nightly: ingest, rebuild features, re-score upcoming games. Weekly retrain; monthly calibration review.
 
+### 5.6 Phase 2 progress (NBA)
+Built and validated so far — `backend/features/nba_features.py` (point-in-time
+rolling features: minutes/points/rebounds/assists/3PM/steals/blocks/turnovers
+at 3/5/10-game and season-to-date windows, rest days, back-to-back, home/away;
+leakage-tested in `backend/validate/test_features.py`), a minutes model and a
+points model (`backend/models/`) with season walk-forward backtests (never
+random splits — enforced by `tests/test_walk_forward.py`). Minutes: MAE 5.00
+vs. a 5.23 naive baseline across all 4 walk-forward folds. Points: MAE 4.62,
+and the Normal(predicted_mean, residual_std) distribution is well-calibrated
+out-of-sample (50/80/90% nominal intervals cover 51.3/80.3/88.8% of actuals).
+
+Also built: `nba_schedule` (tip-off times — Phase 2 needed these to fix a
+real point-in-time bug in the Phase 1 injury backfill: 57 games' injury
+snapshot was published *after* that game's tip-off, all on days with a
+holiday/finale schedule — see `injuries_nba_official.fix_late_reports`,
+0 games affected now, enforced by `test_every_game_has_a_pretip_injury_
+report`), injury-report name resolution (`xref/match_injury_names.py`,
+971/996 names resolved), and `nba_box_status` + `nba_player_availability`
+(full per-game roster including DNP/inactive players, absent entirely from
+`nba_player_games` — see that table's schema comment in `backend/db.py`).
+The availability backfill is large (6,150 games, one API call each against
+a rate-limited unofficial endpoint — stats.nba.com was timing out heavily
+during this session) and is resumable but incomplete: 180/6,150 games done
+as of this writing. `run()` just needs to be invoked again (repeatedly, as
+time allows) to keep making progress — see `backend/ingest/nba_box_status.py`.
+
+Xref match rate, rescoped to players who actually appear in our data (not
+the raw Sleeper-wide rate, which is dominated by G-League/2-way noise):
+98.0% (1,028/1,049). Zero unmatched names have 50+ games in
+`nba_player_games` — every near-miss the fuzzy matcher declined to match
+is a genuinely different person, not a missed real player.
+
+Not yet built: opponent-defense-vs-position, usage/tracking, referee
+features, the remaining NBA markets (rebounds/assists/3PM/PRA/steals+blocks
+each need their own distribution per Section 5.3), isotonic calibration
+against a real betting line (needs Phase 3's odds ingestion), and the
+correlation-aware parlay search (Section 6-8).
+
 ---
 
 ## 6. Parlay probability (correlation)

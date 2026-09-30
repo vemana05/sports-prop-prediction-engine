@@ -214,6 +214,89 @@ def backfill_game_days(seasons: list[str] | None = None) -> IngestResult:
         conn.close()
 
 
+def find_games_missing_pretip_report(conn: duckdb.DuckDBPyConnection) -> list[tuple]:
+    """Games where no ingested injury report row has a matching `game_date`
+    AND a `report_time` before that game's actual tip-off (from
+    nba_schedule). A report fetched on day D commonly already lists games
+    for day D+1 (its own `game_date` field says so), so this is NOT simply
+    "one report per day" — it's genuine per-game point-in-time correctness.
+    """
+    return conn.execute(
+        """
+        WITH game_reports AS (
+            SELECT s.game_id, s.season, s.game_date, s.tip_utc,
+                   (SELECT MAX(i.report_time) FROM nba_injuries i
+                    WHERE i.game_date = s.game_date
+                      AND (i.report_time AT TIME ZONE 'America/New_York') < s.tip_utc) AS ok_report
+            FROM nba_schedule s
+        )
+        SELECT game_id, season, game_date, tip_utc FROM game_reports WHERE ok_report IS NULL ORDER BY game_date
+        """
+    ).fetchall()
+
+
+def fix_late_reports(step_minutes: int = 30, max_hours_back: int = 96) -> IngestResult:
+    """For every game with no valid pre-tip-off report (see
+    `find_games_missing_pretip_report`), scan backward from tip-off in
+    `step_minutes` steps for a report that validates, and ingest it. Grouped
+    by (season, game_date) since multiple games on the same date (e.g. a
+    3-game Christmas slate) share the fix.
+    """
+    conn = get_connection()
+    try:
+        missing = find_games_missing_pretip_report(conn)
+        if not missing:
+            return IngestResult(rows_written=0, notes={"games_fixed": 0, "games_still_missing": 0})
+
+        by_date: dict[tuple, datetime] = {}
+        for game_id, season, game_date, tip_utc in missing:
+            key = (season, game_date)
+            if key not in by_date or tip_utc < by_date[key]:
+                by_date[key] = tip_utc  # earliest tip-off among that date's bad games
+
+        logger.info("nbainjuries: %d games across %d dates need an earlier report", len(missing), len(by_date))
+
+        total_rows = 0
+        fixed_dates = 0
+        for (season, game_date), earliest_tip_utc in sorted(by_date.items()):
+            # earliest tip-off, converted to naive ET wall-clock (nbainjuries needs naive timestamps)
+            et_tip = conn.execute(
+                "SELECT (?::TIMESTAMPTZ AT TIME ZONE 'America/New_York')", [earliest_tip_utc]
+            ).fetchone()[0]
+            candidate = et_tip.replace(tzinfo=None) - timedelta(minutes=step_minutes)
+            found = None
+            steps = int(max_hours_back * 60 / step_minutes)
+            for _ in range(steps):
+                if retry(lambda c=candidate: injury.check_reportvalid(c), what=f"check_reportvalid({candidate})"):
+                    found = candidate
+                    break
+                candidate -= timedelta(minutes=step_minutes)
+            if found is None:
+                logger.warning("nbainjuries: no earlier report found for %s %s within %dh", season, game_date, max_hours_back)
+                continue
+            df = fetch_report(found)
+            rows = _write(conn, df, found)
+            total_rows += rows
+            fixed_dates += 1
+            logger.info("nbainjuries: fetched %s for %s %s (%d rows)", found, season, game_date, rows)
+
+        still_missing = find_games_missing_pretip_report(conn)
+        logger.info(
+            "nbainjuries fix complete: %d/%d dates fixed, %d rows added, %d games still missing",
+            fixed_dates, len(by_date), total_rows, len(still_missing),
+        )
+        conn.execute(
+            "INSERT INTO ingestion_log VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [next_log_id(conn), "nbainjuries", "success", total_rows, utcnow(), utcnow(), None, None],
+        )
+        return IngestResult(
+            rows_written=total_rows,
+            notes={"dates_fixed": fixed_dates, "dates_total": len(by_date), "games_still_missing": len(still_missing)},
+        )
+    finally:
+        conn.close()
+
+
 def backfill_range(start: datetime, end: datetime, step_minutes: int = 30) -> IngestResult:
     """Pull every valid report in [start, end]. Meant for the Phase 2
     backtest's point-in-time injury history, not routine ingestion."""
@@ -238,9 +321,13 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Official NBA injury report ingestion")
     parser.add_argument("--backfill-game-days", action="store_true", help="One pre-game snapshot per game day across all ingested seasons")
+    parser.add_argument("--fix-late-reports", action="store_true", help="Fetch an earlier report for games whose day-level snapshot is after tip-off")
     args = parser.parse_args()
 
-    if args.backfill_game_days:
+    if args.fix_late_reports:
+        result = fix_late_reports()
+        print(f"nbainjuries late-report fix complete: {result.rows_written} rows ({result.notes})")
+    elif args.backfill_game_days:
         result = backfill_game_days()
         print(f"nbainjuries game-day backfill complete: {result.rows_written} rows ({result.notes})")
     else:
