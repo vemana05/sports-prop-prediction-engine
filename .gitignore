@@ -1,0 +1,27 @@
+# env / secrets
+.env
+*.env.local
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# data
+data/raw/**
+!data/raw/.gitkeep
+!data/raw/pbpstats/
+!data/raw/pbpstats/.gitkeep
+*.duckdb
+*.duckdb.wal
+
+# node / next.js
+node_modules/
+.next/
+out/
+
+# os
+.DS_Store

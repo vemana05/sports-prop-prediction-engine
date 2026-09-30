@@ -1,0 +1,18 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./reports:/app/reports
+    command: ["python", "-m", "backend.ingest.runner"]
+
+  # frontend:
+  #   Next.js app (Section 10) — added in Phase 5. Not built yet.
+
+  # scheduler:
+  #   APScheduler nightly ingest/retrain (Section 5.5 / Phase 7). Not built yet.

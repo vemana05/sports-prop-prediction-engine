@@ -1,0 +1,46 @@
+# Source registry (Section 4.1). The ingestion runner reads this file;
+# if a `priority: primary` source fails, it falls back to the next-priority
+# source that provides the same data type and logs the fallback.
+#
+# Only Phase 1 (NBA data foundation) sources are registered so far.
+# NFL sources, odds sources, and premium upgrades are added in later phases.
+
+- name: nba_api
+  league: nba
+  provides: [player_game_logs, player_list]
+  priority: primary
+  refresh: "daily"
+  rate_limit_per_min: 20
+  auth_env_var: null
+  license: "unofficial stats.nba.com wrapper; no redistribution terms published"
+  module: backend.ingest.nba_nbaapi
+
+- name: pbpstats
+  league: nba
+  provides: [possessions, lineups, onoff]
+  priority: primary
+  refresh: "daily"
+  rate_limit_per_min: 20
+  auth_env_var: null
+  license: "MIT"
+  module: backend.ingest.nba_pbpstats
+
+- name: nbainjuries
+  league: nba
+  provides: [injuries]
+  priority: primary
+  refresh: "every 15m on game days"
+  rate_limit_per_min: 20
+  auth_env_var: null
+  license: "MIT; source data is NBA official injury reports"
+  module: backend.ingest.injuries_nba_official
+
+- name: sleeper
+  league: [nba, nfl]
+  provides: [player_status, depth_chart, trending]
+  priority: secondary
+  refresh: "hourly"
+  rate_limit_per_min: 1000
+  auth_env_var: null
+  license: "public API, no published license"
+  module: backend.ingest.sleeper
