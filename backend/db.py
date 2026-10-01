@@ -189,6 +189,54 @@ CREATE TABLE IF NOT EXISTS xref_review_queue (
     resolved        BOOLEAN DEFAULT FALSE,
     PRIMARY KEY (source, raw_name, raw_id)
 );
+
+-- Free-tier forward odds collection (The Odds API, Section 5.7). Raw player
+-- points prop lines, one row per (event, player, bookmaker, pull). Kept
+-- even across repeated pulls of the same not-yet-started game so line
+-- movement is visible, not just the latest snapshot.
+CREATE TABLE IF NOT EXISTS odds_snapshots (
+    pulled_at        TIMESTAMP NOT NULL,
+    event_id         VARCHAR NOT NULL,       -- The Odds API's event id
+    game_id_nba      VARCHAR,                -- resolved against nba_schedule where possible, nullable
+    commence_time     TIMESTAMPTZ,
+    player_name_raw  VARCHAR NOT NULL,
+    market            VARCHAR NOT NULL,       -- e.g. "player_points"
+    bookmaker         VARCHAR NOT NULL,
+    line              DOUBLE,
+    over_price        DOUBLE,                 -- decimal odds, matches Section 8's EV formula (d)
+    under_price       DOUBLE,
+    PRIMARY KEY (pulled_at, event_id, player_name_raw, market, bookmaker)
+);
+
+-- One row per call to The Odds API, straight from its own rate-limit
+-- headers (x-requests-used / x-requests-remaining) — this IS the credit
+-- budget guard's source of truth, not a locally-computed estimate, since
+-- the API tracks usage server-side per key per billing month itself.
+CREATE TABLE IF NOT EXISTS odds_api_usage_log (
+    called_at           TIMESTAMP NOT NULL,
+    endpoint            VARCHAR NOT NULL,
+    requests_used        INTEGER,
+    requests_remaining   INTEGER,
+    status              VARCHAR NOT NULL,     -- success | skipped_budget | error
+    note                VARCHAR,
+    PRIMARY KEY (called_at, endpoint)
+);
+
+-- Every model prediction logged before a game, for paper-trading against
+-- real lines once odds_snapshots has them — the free-tier substitute for a
+-- real CLV/ROI backtest (Section 3.5 / 5.7). Logged once per (game,
+-- player, market); never overwritten, so a prediction can't quietly drift
+-- after the fact.
+CREATE TABLE IF NOT EXISTS model_predictions_log (
+    predicted_at      TIMESTAMP NOT NULL,
+    game_id           VARCHAR NOT NULL,
+    player_id_nba     VARCHAR NOT NULL,
+    market            VARCHAR NOT NULL,        -- points | rebounds | assists | fg3m | minutes
+    predicted_mean    DOUBLE NOT NULL,
+    dispersion_param  DOUBLE,                   -- sigma (Normal) or r (NegBinom), per market's distribution
+    model_version      VARCHAR,
+    PRIMARY KEY (game_id, player_id_nba, market)
+);
 """
 
 

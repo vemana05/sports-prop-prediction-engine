@@ -65,3 +65,14 @@
   auth_env_var: null
   license: "public API, no published license"
   module: backend.ingest.sleeper
+
+- name: odds_theoddsapi
+  league: nba
+  provides: [odds, player_props]
+  priority: primary
+  refresh: "daily"
+  rate_limit_per_min: 10
+  auth_env_var: ODDS_API_KEY
+  license: "commercial API, free tier only (500 credits/mo) — see Section 5.7"
+  module: backend.ingest.odds_theoddsapi
+  note: "no-ops cleanly with a warning if ODDS_API_KEY is unset; credit-budget-guarded, see ODDS_API_MONTHLY_CREDIT_BUDGET"

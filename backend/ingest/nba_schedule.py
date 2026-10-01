@@ -71,6 +71,35 @@ def run(conn: duckdb.DuckDBPyConnection | None = None) -> IngestResult:
             conn.close()
 
 
+def ingest_season(season: str, conn: duckdb.DuckDBPyConnection | None = None) -> IngestResult:
+    """Ingest a single season's schedule on its own — used for the
+    upcoming season (e.g. "2026-27"), which `run()`/`SEASONS` deliberately
+    don't include since this is historical-backfill validation's entry
+    point and a future, unplayed season isn't historical data. Forward
+    odds collection and prediction logging call this directly instead.
+    """
+    own_conn = conn is None
+    conn = conn or get_connection()
+    try:
+        df = fetch_season_schedule(season)
+        rows = _write(conn, df)
+        logger.info("nba_schedule: wrote %d games for %s", rows, season)
+        return IngestResult(rows_written=rows, notes={"season": season})
+    finally:
+        if own_conn:
+            conn.close()
+
+
 if __name__ == "__main__":
-    result = run()
-    print(f"nba_schedule ingest complete: {result.rows_written} rows ({result.notes})")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="NBA schedule ingestion")
+    parser.add_argument("--season", help="Ingest a single season (e.g. the upcoming one), instead of the historical SEASONS list")
+    args = parser.parse_args()
+
+    if args.season:
+        result = ingest_season(args.season)
+        print(f"nba_schedule ingest complete: {result.rows_written} rows for {args.season}")
+    else:
+        result = run()
+        print(f"nba_schedule ingest complete: {result.rows_written} rows ({result.notes})")

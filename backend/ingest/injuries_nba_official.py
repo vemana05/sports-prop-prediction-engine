@@ -220,6 +220,11 @@ def find_games_missing_pretip_report(conn: duckdb.DuckDBPyConnection) -> list[tu
     nba_schedule). A report fetched on day D commonly already lists games
     for day D+1 (its own `game_date` field says so), so this is NOT simply
     "one report per day" — it's genuine per-game point-in-time correctness.
+
+    Scoped to games already in `nba_player_games` (i.e. already played) —
+    `nba_schedule` also holds the upcoming season's future, unplayed games
+    (for forward prediction logging), which obviously have no injury report
+    yet and aren't a correctness problem.
     """
     return conn.execute(
         """
@@ -229,6 +234,7 @@ def find_games_missing_pretip_report(conn: duckdb.DuckDBPyConnection) -> list[tu
                     WHERE i.game_date = s.game_date
                       AND (i.report_time AT TIME ZONE 'America/New_York') < s.tip_utc) AS ok_report
             FROM nba_schedule s
+            WHERE s.game_id IN (SELECT DISTINCT game_id FROM nba_player_games)
         )
         SELECT game_id, season, game_date, tip_utc FROM game_reports WHERE ok_report IS NULL ORDER BY game_date
         """

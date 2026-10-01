@@ -64,6 +64,12 @@ Next.js UI
 
 ## 3. Data sources (researched September 2026)
 
+> **Free-tier-only policy:** this project does not pay for any API or data source. Every source below is either
+> free outright or used strictly within its free tier's limits (request rate, monthly credits, no paid add-ons).
+> A source whose useful parts sit behind a paywall is either dropped (BALLDONTLIE — see 3.2) or kept only for
+> what its free tier actually offers, with that limit called out explicitly (The Odds API — 3.5). Section 3.6
+> ("Premium upgrades") lists paid options for context only; they are out of scope and not built against.
+
 Verify pricing/limits at signup; they change often. Everything below is grouped by what it contributes to the model.
 
 ### 3.1 NFL — core stats (FREE)
@@ -92,8 +98,9 @@ Verify pricing/limits at signup; they change often. Everything below is grouped 
    - On/off splits: how a player's usage, points, and assists change when a specific teammate sits
    - Possession counts (better pace estimates than box-score formulas)
    - Configure its local data directory so games are cached to disk and never re-downloaded.
-3. **BALLDONTLIE** (https://www.balldontlie.io) — clean documented REST API with SDKs. Free tier ~5 req/min; game player stats + injuries need the ~$9.99/mo ALL-STAR tier; higher tiers include advanced stats, odds, and player props. Use as the reliable daily updater and fallback.
-4. **`sportsdataverse` (Python)** — ESPN + stats.nba.com wrappers, also mirrors nflverse. Use as a **second source for cross-checking** box scores and for ESPN game IDs. Install from GitHub per its README.
+3. **`sportsdataverse` (Python)** — ESPN + stats.nba.com wrappers, also mirrors nflverse. Use as a **second source for cross-checking** box scores and for ESPN game IDs. Install from GitHub per its README.
+
+> **Dropped: BALLDONTLIE.** Its free tier (~5 req/min) doesn't cover game player stats, injuries, advanced stats, odds, or player props — those all need the paid ALL-STAR tier or higher. Under the free-tier-only policy above, it adds nothing nba_api doesn't already cover for free, so it's not part of the plan. `nba_api` is the daily updater.
 
 ### 3.3 Injuries, availability & lineups
 
@@ -104,7 +111,6 @@ Verify pricing/limits at signup; they change often. Everything below is grouped 
 | nflreadpy `load_injuries()` | NFL | Weekly game-status designations | Free |
 | **Sleeper API** (`api.sleeper.app/v1`) | NFL + NBA | Player status, injury status, depth-chart order, **trending adds/drops** (a fast signal that news just broke). Public, no key. Pull `/players/{sport}` at most once a day (~5 MB); stay under ~1,000 calls/min. | Free |
 | ESPN (unofficial) | Both | Team news, injuries, depth charts via `site.api.espn.com/apis/site/v2/sports/{sport}/{league}/...` | Free |
-| BALLDONTLIE injuries | NBA | Structured injury feed | Paid tier |
 
 **Why historical injury snapshots matter:** the backtest must use the injury report *as it looked before tip-off*, not the final outcome. `nbainjuries`' timestamped snapshots make that possible for NBA.
 
@@ -122,30 +128,35 @@ Verify pricing/limits at signup; they change often. Everything below is grouped 
 
 ### 3.5 Sportsbook odds & props
 
-1. **The Odds API** (https://the-odds-api.com) — primary.
-   - Free: 500 credits/month, no historical. Paid from $30/mo (20K credits) with historical snapshots back to 2020. Player props for major US books (DraftKings, FanDuel, BetMGM, Caesars…).
+1. **The Odds API** (https://the-odds-api.com) — primary, **free tier only: 500 credits/month, no historical data.**
+   Staying on the free tier is a hard constraint, not a starting point to upgrade from — see Section 5.7's
+   credit-budget guard, which stops pulling before the account hits its monthly cap. No historical odds on this
+   tier means no real CLV/ROI backtest against past closing lines (that needs the $30/mo tier); the free-tier
+   substitute is forward paper-trading — log model predictions before each game, compare to the real line once
+   it's pulled, see Section 5.7.
    - ⚠️ Other companies use nearly identical names (e.g. theoddsapi.com is a separate service). Use **the-odds-api.com, v4** only.
-2. **Secondary odds source** (pick one, free tier) for cross-checking lines and filling gaps: **SportsGameOdds**, **OddsPapi**, or BALLDONTLIE's odds/props endpoints.
+2. **Secondary odds source** (pick one, free tier only) for cross-checking lines and filling gaps: **SportsGameOdds** or **OddsPapi**. Verify at signup that historical player-prop odds are actually included free, not just advertised — see Section 5.7's findings for OddsPapi specifically.
 3. **Odds snapshot store:** save every pull with a timestamp. This enables:
    - Line-movement charts in the UI
-   - **Closing line value (CLV)** tracking: did the model's picks beat the closing line? That's the best early indicator the model has real edge, long before win/loss results are statistically meaningful.
+   - **Closing line value (CLV)** tracking: did the model's picks beat the closing line? That's the best early indicator the model has real edge, long before win/loss results are statistically meaningful. Requires paid historical odds (not available on the free tier — see above); the free-tier interim is the paper-trading log.
 
-### 3.6 Premium upgrades (only if the project gets serious)
+### 3.6 Premium upgrades (not used — paid only, out of scope under the free-tier-only policy)
 - **SportsDataIO** — stats, injuries, depth charts, projections, news, odds. Free trial data is *scrambled* (good for integration code only). Real data needs a commercial agreement.
 - **Sportradar** — enterprise official data; trial keys, expensive production.
+- **The Odds API's paid tier** ($30/mo+, historical odds back to 2020) — would unlock real CLV/ROI backtesting; not part of the current plan.
 
 ### 3.7 Explicitly avoid
 - Scraping Basketball-Reference / Pro-Football-Reference (terms restrict automated scraping).
 - Anything behind a login, or paid sites without an API license (e.g. copying Cleaning the Glass tables).
 - Social-media scraping for news.
 
-### 3.8 Source summary (MVP cost ≈ $0–$40/mo)
+### 3.8 Source summary (MVP cost = $0/mo — free tiers only, see Section 3's policy note)
 | Need | NFL | NBA |
 |---|---|---|
 | Historical box/weekly stats | nflreadpy | nba_api (+ sportsdataverse cross-check) |
 | Play-by-play / lineups | nflreadpy pbp, participation, FTN | pbpstats |
 | Tracking / advanced | Next Gen Stats, ff_opportunity | nba_api tracking endpoints |
-| Daily updates | nflreadpy | BALLDONTLIE (fallback nba_api) |
+| Daily updates | nflreadpy | nba_api |
 | Injuries | nflreadpy + Sleeper + ESPN | nbainjuries + Sleeper + ESPN |
 | Depth charts | nflreadpy + Sleeper | Sleeper + starters from recent box scores |
 | Weather | Open-Meteo | — |
@@ -179,7 +190,7 @@ The ingestion runner reads this file; if a primary source fails, it falls back a
 
 ### 4.2 Player & team ID crosswalk
 Every source uses different IDs and name spellings ("Lively II, Dereck" vs "Dereck Lively II").
-- Table `player_xref`: internal `player_id` ↔ nba.com ID, nflverse `gsis_id`, ESPN ID, Sleeper ID, BALLDONTLIE ID, odds-API name strings.
+- Table `player_xref`: internal `player_id` ↔ nba.com ID, nflverse `gsis_id`, ESPN ID, Sleeper ID, odds-API name strings.
 - Seed NFL from `nflreadpy.load_ff_playerids()`; seed NBA from nba.com IDs + Sleeper's player dump.
 - Fuzzy matching (normalize suffixes, accents, punctuation) for new names, with a `manual_overrides.csv` for failures.
 - **Unmatched names go to a review queue shown in the UI** — never silently dropped.
@@ -294,10 +305,86 @@ the raw Sleeper-wide rate, which is dominated by G-League/2-way noise):
 is a genuinely different person, not a missed real player.
 
 Not yet built: opponent-defense-vs-position, usage/tracking, referee
-features, the remaining NBA markets (rebounds/assists/3PM/PRA/steals+blocks
-each need their own distribution per Section 5.3), isotonic calibration
-against a real betting line (needs Phase 3's odds ingestion), and the
-correlation-aware parlay search (Section 6-8).
+features, PRA and steals+blocks (rebounds, assists, and 3PM are built — see
+5.7), and the correlation-aware parlay search (Section 6-8).
+
+### 5.7 Phase 2 continued: more markets, free calibration, and odds collection
+
+**Naive baselines, so "the model works" means something.** The points model's
+walk-forward MAE (4.62) is now reported next to two naive baselines on the
+same held-out games: predicting a player's own last-10-game average (MAE
+4.69) and his season average (MAE 4.67). The model beats both, but only by
+~0.05-0.07 points — a real, modest edge, not a dramatic one. Reporting a
+model's accuracy without this comparison is close to meaningless; a model
+that "only" gets 4.62 MAE could still be worthless if a rolling average gets
+4.60. See `backend/models/nba_points_model.py`'s `naive_baseline_report`.
+
+**Rebounds, assists, and 3-pointers made** — `backend/models/nba_rebounds_
+model.py`, `nba_assists_model.py`, `nba_fg3m_model.py`, all thin wrappers
+around the shared machinery in `nba_market_model.py`. These three use
+Negative Binomial, not Normal, per Section 5.3 ("Counts... Negative
+Binomial"), with dispersion estimated per walk-forward fold via method of
+moments from that fold's own training residuals (a real, if simplified,
+stand-in for "player-specific variance" — see the module's docstring).
+Rebounds MAE 1.928 (vs. 1.947 naive last-10 avg), assists MAE 1.348 (vs.
+1.358), 3PM MAE 0.892.
+
+**Free calibration backtest — no odds account needed.**
+`backend/backtest/synthetic_line_calibration.py` generates a synthetic prop
+line from each player's own 10-game rolling average, rounded to the nearest
+.5 (so there's never a push), and checks the model's predicted P(over that
+line) against the actual hit rate, bucketed and charted
+(`reports/calibration_*.png`). This is NOT the same as comparing to a real
+sportsbook line — it's what's checkable for free, before any odds account
+exists. The points model's chart shows real, informative miscalibration:
+overconfident at the tails (e.g. predicted 68.6% hits only 57.7% of the
+time) even though the same model's calibration against its *own* predicted
+mean (Section 5.6) was near-perfect — a good illustration of why
+calibration has to be checked against the actual line being bet, not just
+against the model's own output.
+
+**OddsPapi (free tier) — researched, not yet built on.** Per the task of
+checking whether OddsPapi's free tier really provides historical NBA player
+prop odds before building anything against it: OddsPapi's own published
+claims (their pricing/blog pages) are 250 requests/month free, no credit
+card required, and — unusually for a free tier — historical player-prop
+odds included, not gated behind a paid plan. Their API docs describe a
+`/v4/historical-odds` endpoint that returns full price history per prop.
+**This could not be independently verified.** Every favorable claim found
+traces back to OddsPapi's own marketing content (pricing page, blog
+comparisons against competitors); no independent reviews or third-party
+confirmation of data quality or reliability were found. Their public docs
+page didn't show clear NBA-specific or player-props-specific endpoint
+parameters either (though that may just be a JS-rendering limit of the
+research tool used, not a real gap). **Signing up for an account is
+something only the user can do** — it needs an email and agreement to
+terms, which isn't something to do on someone else's behalf. If this is
+worth pursuing, the next step is the user creating the free account
+(no card required, per OddsPapi's own claim) and sharing an API key, or
+testing it directly with a quick request against a real NBA event.
+
+**Daily forward odds collection — built, not yet running live.**
+`backend/ingest/odds_theoddsapi.py` pulls NBA `player_points` props from The
+Odds API's free tier (`regions=us`, one market only — 1 credit per event,
+to keep a full season's daily collection well under the 500-credit/month
+cap). A credit-budget guard checks the account's own `x-requests-used`
+response header (not a locally-computed estimate — the API tracks usage
+server-side) against `ODDS_API_MONTHLY_CREDIT_BUDGET` (default 450, leaving
+headroom under the real 500 cap) before every call, and stops mid-run if a
+daily pull would cross it. `backend/predict/log_predictions.py` logs every
+model's prediction (minutes, points, rebounds, assists, 3PM) for every
+likely-active player in every game in the next 48 hours — using
+`backend/features/nba_current_form.py` for each player's live rolling form
+— BEFORE the matching odds snapshot is pulled, so a prediction is always on
+record first and never silently revised later. Both are meant to run daily
+starting at the 2026-27 tip-off (Oct 20, 2026; the schedule for it is
+already ingested) via cron or the Phase 7 scheduler once it exists — this
+IS the free-tier substitute for a real CLV/ROI backtest (no historical odds
+on the free tier — see Section 3.5): once enough days of paired
+predictions and real lines accumulate, they can be compared directly.
+**Needs the user's `ODDS_API_KEY`** in `.env` to actually run (free
+sign-up at the-odds-api.com); without it, `run()` logs a warning and exits
+cleanly rather than failing.
 
 ---
 
@@ -504,7 +591,6 @@ parlay-builder/
 │   │   ├── nfl_nflverse.py
 │   │   ├── nba_nbaapi.py
 │   │   ├── nba_pbpstats.py
-│   │   ├── nba_balldontlie.py
 │   │   ├── sportsdataverse_espn.py
 │   │   ├── injuries_nba_official.py
 │   │   ├── sleeper.py
@@ -533,7 +619,7 @@ parlay-builder/
 ```
 ODDS_API_KEY=
 SECONDARY_ODDS_API_KEY=
-BALLDONTLIE_API_KEY=
+ODDS_API_MONTHLY_CREDIT_BUDGET=450   # stop pulling before the free tier's 500/mo cap (Section 5.7)
 ANTHROPIC_API_KEY=            # optional
 ENABLE_LLM_EXPLANATIONS=false
 ENABLE_LLM_NEWS_FLAGS=false

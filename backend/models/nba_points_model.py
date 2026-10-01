@@ -70,6 +70,18 @@ def load_training_frame(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     return df
 
 
+def train_final_model(conn: duckdb.DuckDBPyConnection) -> tuple[lgb.Booster, float]:
+    """Trains on every ingested season — for scoring upcoming games
+    (backend/predict/log_predictions.py), not backtest metrics. Returns
+    (model, sigma) where sigma is the residual std over this full training
+    set (in-sample, same simplification as each walk-forward fold uses)."""
+    df = load_training_frame(conn)
+    X, y = df[FEATURE_COLUMNS], df[TARGET_COLUMN]
+    model = lgb.train(LGB_PARAMS, lgb.Dataset(X, label=y), num_boost_round=NUM_BOOST_ROUND)
+    sigma = float(np.std(y.values - model.predict(X)))
+    return model, sigma
+
+
 def walk_forward_backtest(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     df = load_training_frame(conn)
     results = []
@@ -83,11 +95,28 @@ def walk_forward_backtest(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
         residual_std = float(np.std(y_train.values - train_preds))  # global dispersion, in-sample by construction of this fold
 
         preds = model.predict(test_df[FEATURE_COLUMNS])
-        fold = test_df[["player_id_nba", "game_id", "game_date", "season", TARGET_COLUMN]].copy()
+        fold = test_df[
+            ["player_id_nba", "game_id", "game_date", "season", TARGET_COLUMN, "pts_roll10", "pts_roll_season"]
+        ].copy()
         fold["predicted_mean"] = preds
         fold["sigma"] = residual_std
         results.append(fold)
     return pd.concat(results, ignore_index=True)
+
+
+def naive_baseline_report(results: pd.DataFrame) -> pd.DataFrame:
+    """What the model needs to beat: predicting a player's own rolling
+    average directly, no model at all. Each baseline's MAE is computed only
+    over rows where that baseline is defined (a season-average baseline has
+    nothing to say on a player's first game of a season)."""
+    rows = []
+    for label, col in [("last_10_avg", "pts_roll10"), ("season_avg", "pts_roll_season")]:
+        valid = results.dropna(subset=[col])
+        mae = (valid[col] - valid[TARGET_COLUMN]).abs().mean()
+        rows.append({"baseline": label, "mae": mae, "n": len(valid)})
+    model_mae = (results["predicted_mean"] - results[TARGET_COLUMN]).abs().mean()
+    rows.append({"baseline": "model (LightGBM)", "mae": model_mae, "n": len(results)})
+    return pd.DataFrame(rows)
 
 
 def coverage_report(results: pd.DataFrame) -> pd.DataFrame:
@@ -127,18 +156,28 @@ def calibrate_isotonic(results: pd.DataFrame) -> IsotonicRegression:
 
 
 if __name__ == "__main__":
+    from backend.backtest.synthetic_line_calibration import run_synthetic_line_calibration
+
     conn = get_connection()
     try:
         results = walk_forward_backtest(conn)
 
-        mae = (results["predicted_mean"] - results[TARGET_COLUMN]).abs().mean()
-        print(f"Points model — overall MAE: {mae:.3f} (n={len(results)})\n")
+        print("Naive baselines vs. model (does the model actually earn its keep?):")
+        print(naive_baseline_report(results).to_string(index=False))
 
-        print("Calibration (coverage of predicted intervals):")
+        print("\nCalibration (coverage of predicted intervals, line = model's own predicted mean):")
         print(coverage_report(results).to_string(index=False))
 
         iso = calibrate_isotonic(results)
         print(f"\nIsotonic calibration fit on {len(results)} out-of-sample rows "
               f"(P(over own predicted mean) -> empirical hit rate).")
+
+        print("\nFree synthetic-line calibration (line = player's own 10-game rolling average, rounded to .5):")
+        calib = run_synthetic_line_calibration(
+            results, target_column=TARGET_COLUMN, line_source_column="pts_roll10",
+            p_over_fn=p_over, market_name="points", chart_path="reports/calibration_points.png",
+        )
+        print(calib.to_string(index=False))
+        print("Chart saved to reports/calibration_points.png")
     finally:
         conn.close()
