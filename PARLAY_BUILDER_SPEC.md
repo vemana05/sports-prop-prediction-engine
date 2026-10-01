@@ -529,6 +529,10 @@ Inputs: bankroll (typed in; never connect to sportsbook accounts), decimal odds 
 
 Show the math in the UI: *Model 31% · Book 24% · +320 · EV +$0.30 per $1 · Suggested $12.50*.
 
+### Phase 4 progress
+
+Built per this section, against the walk-forward-calibrated Phase 2 models: `backend/parlay/residuals.py` (cached walk-forward residuals), `correlations.py` (pooled same-player/teammate/opponent correlations), `monte_carlo.py` (Gaussian-copula simulator + nearest-PSD fix), `search.py` (two-phase beam search), `backend/bankroll/kelly.py` (sizing). 36 unit tests, all passing. 3PM uses naive last-10 (won walk-forward vs. the model); all other markets use the model. Verified end-to-end against the real Oct 20 opening-night odds pool.
+
 ---
 
 ## 9. Honest-math & responsible-gambling requirements

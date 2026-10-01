@@ -1,0 +1,28 @@
+# Risk tiers (spec Section 7). Beam search filters the leg pool by
+# min_leg_prob, searches within legs_min..legs_max, and keeps finalists
+# whose Monte Carlo-simulated parlay hit probability falls in
+# [target_parlay_prob_min, target_parlay_prob_max].
+
+safe:
+  legs_min: 2
+  legs_max: 3
+  min_leg_prob: 0.70
+  target_parlay_prob_min: 0.35
+  target_parlay_prob_max: 1.0
+  max_stake_pct_bankroll: 0.02
+
+risky:
+  legs_min: 3
+  legs_max: 5
+  min_leg_prob: 0.58
+  target_parlay_prob_min: 0.12
+  target_parlay_prob_max: 0.35
+  max_stake_pct_bankroll: 0.01
+
+dangerous:
+  legs_min: 5
+  legs_max: 8
+  min_leg_prob: 0.50
+  target_parlay_prob_min: 0.0
+  target_parlay_prob_max: 0.12
+  max_stake_pct_bankroll: 0.005
