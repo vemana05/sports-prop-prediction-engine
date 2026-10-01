@@ -378,13 +378,111 @@ likely-active player in every game in the next 48 hours — using
 — BEFORE the matching odds snapshot is pulled, so a prediction is always on
 record first and never silently revised later. Both are meant to run daily
 starting at the 2026-27 tip-off (Oct 20, 2026; the schedule for it is
-already ingested) via cron or the Phase 7 scheduler once it exists — this
+already ingested) via a daily local launchd job (see Section 5.8) — this
 IS the free-tier substitute for a real CLV/ROI backtest (no historical odds
 on the free tier — see Section 3.5): once enough days of paired
 predictions and real lines accumulate, they can be compared directly.
 **Needs the user's `ODDS_API_KEY`** in `.env` to actually run (free
 sign-up at the-odds-api.com); without it, `run()` logs a warning and exits
 cleanly rather than failing.
+
+### 5.8 Isotonic calibration, three more free features, and a daily scheduler
+
+**Isotonic calibration, fit genuinely out-of-sample.** The synthetic-line
+calibration backtest (5.7) now fits isotonic regression per market and
+reports before/after — but fit on season N using ONLY seasons before N
+(nested within the walk-forward structure, not just pooled with the eval
+set it's then scored against, which would be circular). Results, mean
+absolute calibration error (predicted vs. actual hit rate, averaged across
+deciles): points 0.0729 → 0.0201, rebounds 0.0211 → 0.0077, assists
+0.0351 → 0.0116, 3PM — calibration error reduced similarly. Charts in
+`reports/calibration_*.png` now show both curves for a direct before/after
+comparison.
+
+**Three new features, none depending on the availability backfill:**
+- **Usage rate** (`usage_rate_roll10`) — the standard box-score formula,
+  computed per game from real FGA/FTA/TOV/minutes (which required adding
+  those columns to `nba_player_games` — nba_api's LeagueGameLog already
+  had them, nba_nbaapi.py just wasn't selecting them) and rolled forward.
+- **Team / opponent pace** (`team_pace_roll10` / `opp_pace_roll10`) — a
+  box-score pace proxy (FGA − OREB + TOV + 0.44·FTA), rolled forward per
+  team. Not true possession-based pace (still deferred, needs
+  `nba_possessions`) — the free, box-score-only substitute.
+- **Opponent defense vs. position** (`opp_def_vs_position_pts_roll10`) —
+  for the player's own position group (G/F/C, from Sleeper via
+  `player_xref`), the opponent's rolling points allowed to that group.
+
+All four markets retrained with these features added (walk-forward MAE,
+vs. the same naive last-10-average baseline each was already compared
+against):
+
+| Market    | Before   | After    | Naive baseline |
+|-----------|----------|----------|-----------------|
+| Minutes   | 5.003    | 4.974    | 5.232           |
+| Points    | 4.620    | 4.592    | 4.693           |
+| Rebounds  | 1.928    | 1.920    | 1.947           |
+| Assists   | 1.348    | 1.345    | 1.358           |
+| 3PM       | 0.892    | 0.890    | 0.887           |
+
+Small, real improvements across minutes/points/rebounds/assists. **3PM is
+the one honest exception**: the model (0.890) is now essentially tied with
+— technically a hair worse than — the naive last-10-average (0.887). Worth
+stating plainly rather than burying: not every market benefits equally
+from more features, and made-3s may simply be closer to a "recent rate"
+stat than something a tree model's extra context meaningfully improves on.
+
+**Two more real bugs found and fixed**, both the same root cause as each
+other (and conceptually the same class as earlier sessions' pandas/date
+bug): `ALTER TABLE ... ADD COLUMN` appends new columns to the END of an
+*already-existing* table — it does NOT retroactively match a `CREATE TABLE
+IF NOT EXISTS` statement's declared column order, which only applies to a
+genuinely new table. Two `INSERT INTO table SELECT ...` statements (no
+explicit target column list) relied on that assumption and broke the
+moment a database that already had the table hit them: one in
+`nba_nbaapi.py` (new fga/fgm/fta/ftm/oreb/dreb columns landing on top of
+source_published_at/ingested_at — BIGINT values into TIMESTAMP columns,
+a hard crash), one in `nba_features.py` (the four new feature columns
+simply hadn't been added via `ALTER TABLE` at all, since only
+`nba_player_games`'s migration had one). Fixed by adding the missing
+`ALTER TABLE` statements and — more durably — giving both `INSERT`
+statements explicit target column lists, which makes them correct
+regardless of a table's actual on-disk column order. A new reconciliation
+test (`test_shooting_stats_are_plausible`) guards the first case going
+forward.
+
+**Daily scheduler, local launchd (macOS).** `scripts/daily_odds_job.sh`
+runs `log_predictions` then `odds_theoddsapi` in sequence, logging to
+`logs/`. `scripts/com.parlaybuilder.dailyoddsjob.plist` schedules it daily
+at 10:00 AM (this machine's system timezone is already America/New_York,
+confirmed via `date`, so that's 10:00 AM ET — 2 hours clear of the
+earliest NBA tip-offs ever scheduled, and late enough that books have
+usually posted that day's player props). What has to actually be true at
+10:00 AM for it to work:
+1. **Docker Desktop's daemon running** — `docker compose run` fails
+   immediately otherwise. Turn on "Start Docker Desktop when you log in"
+   in Docker Desktop's settings so this doesn't depend on remembering to
+   open it.
+2. **The Mac awake, not asleep** — launchd does not reliably wake a
+   sleeping Mac for a `StartCalendarInterval` job on battery/lid-closed; a
+   missed job runs late, after wake, which could be after tip-off.
+   Recommended: `sudo pmset repeat wakeorpoweron MTWRFSU 09:55:00` (wakes
+   the Mac 5 minutes before the job; the user runs this themselves — it's
+   an admin/power-management change, not something to make on someone's
+   behalf) and keep the lid open or the Mac plugged in through the
+   morning.
+3. **`ODDS_API_KEY` set in `.env`** — otherwise `odds_theoddsapi.py` logs
+   a warning and exits cleanly (no crash, just no odds collected that day).
+
+Install: `cp scripts/com.parlaybuilder.dailyoddsjob.plist ~/Library/LaunchAgents/`
+(the path inside the file is already absolute to this checkout), then
+`launchctl load ~/Library/LaunchAgents/com.parlaybuilder.dailyoddsjob.plist`.
+To stop it: `launchctl unload` the same path.
+
+Models are now cached to `data/models/` (`backend/models/model_cache.py`)
+and retrained automatically once they're more than 7 days old ("weekly
+retrain" per Section 5.5) rather than from scratch on every daily run —
+the daily job now takes seconds for the model-loading step instead of the
+several minutes 5 fresh LightGBM trainings cost.
 
 ---
 

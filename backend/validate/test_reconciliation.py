@@ -33,6 +33,27 @@ def test_counting_stats_non_negative(conn):
     assert bad == [], f"negative counting stats found: {bad[:10]}"
 
 
+def test_shooting_stats_are_plausible(conn):
+    """Regression guard for a real bug: an ALTER TABLE-appended column
+    ended up positionally misaligned with an unqualified `INSERT INTO
+    table SELECT ...` (no explicit column list), landing BIGINT shot-count
+    values into TIMESTAMP columns — a hard crash that time, but a subtler
+    version of the same mistake could silently swap two DOUBLE columns
+    instead. Made/attempted and FGA/FTA ranges catch that: fgm > fga or an
+    attempt count over ~60 means columns are misaligned, not just a bad game."""
+    bad = conn.execute(
+        """
+        SELECT player_id_nba, game_id, fga, fgm, fta, ftm, oreb, dreb FROM nba_player_games
+        WHERE fga IS NOT NULL AND (
+            fgm > fga OR ftm > fta OR
+            fga < 0 OR fgm < 0 OR fta < 0 OR ftm < 0 OR oreb < 0 OR dreb < 0 OR
+            fga > 60 OR fta > 60
+        )
+        """
+    ).fetchall()
+    assert bad == [], f"implausible shooting stats (possible column misalignment): {bad[:10]}"
+
+
 def test_no_duplicate_injury_snapshots(conn):
     dupes = conn.execute(
         """

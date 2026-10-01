@@ -34,15 +34,8 @@ from scipy import stats
 from sklearn.isotonic import IsotonicRegression
 
 from backend.db import get_connection
-from backend.models.nba_minutes_model import SEASON_ORDER, walk_forward_splits
+from backend.models.nba_minutes_model import FEATURE_COLUMNS, SEASON_ORDER, walk_forward_splits
 
-FEATURE_COLUMNS = [
-    "rest_days", "is_back_to_back", "games_played_prior_season",
-    "min_roll3", "min_roll5", "min_roll10", "min_roll_season", "min_std10",
-    "pts_roll3", "pts_roll5", "pts_roll10", "pts_roll_season", "pts_std10",
-    "reb_roll10", "ast_roll10", "fg3m_roll10", "stl_roll10", "blk_roll10", "tov_roll10",
-    "home_flag",
-]
 TARGET_COLUMN = "pts"
 
 LGB_PARAMS = {
@@ -172,12 +165,16 @@ if __name__ == "__main__":
         print(f"\nIsotonic calibration fit on {len(results)} out-of-sample rows "
               f"(P(over own predicted mean) -> empirical hit rate).")
 
-        print("\nFree synthetic-line calibration (line = player's own 10-game rolling average, rounded to .5):")
+        print("\nFree synthetic-line calibration, before vs. after isotonic (line = player's own 10-game rolling average, rounded to .5):")
         calib = run_synthetic_line_calibration(
             results, target_column=TARGET_COLUMN, line_source_column="pts_roll10",
             p_over_fn=p_over, market_name="points", chart_path="reports/calibration_points.png",
         )
-        print(calib.to_string(index=False))
+        print("Before (raw):")
+        print(calib["raw"].to_string(index=False))
+        print("After (isotonic):")
+        print(calib["calibrated"].to_string(index=False))
+        print(f"Mean abs calibration error: {calib['raw_mean_abs_calibration_error']:.4f} -> {calib['calibrated_mean_abs_calibration_error']:.4f} (n={calib['n']})")
         print("Chart saved to reports/calibration_points.png")
     finally:
         conn.close()

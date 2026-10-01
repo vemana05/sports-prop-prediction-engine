@@ -56,10 +56,27 @@ CREATE TABLE IF NOT EXISTS nba_player_games (
     stl                 DOUBLE,
     blk                 DOUBLE,
     tov                 DOUBLE,
+    fga                 DOUBLE,
+    fgm                 DOUBLE,
+    fta                 DOUBLE,
+    ftm                 DOUBLE,
+    oreb                DOUBLE,
+    dreb                DOUBLE,
     source_published_at TIMESTAMP,
     ingested_at          TIMESTAMP NOT NULL,
     PRIMARY KEY (player_id_nba, game_id)
 );
+
+-- Migration: fga/fgm/fta/ftm/oreb/dreb added after the table already
+-- existed (needed for usage rate and a real pace estimate — Section 5.7).
+-- Same free LeagueGameLog call nba_nbaapi.py already makes just needed to
+-- select a few more columns; see that module's re-ingestion.
+ALTER TABLE nba_player_games ADD COLUMN IF NOT EXISTS fga DOUBLE;
+ALTER TABLE nba_player_games ADD COLUMN IF NOT EXISTS fgm DOUBLE;
+ALTER TABLE nba_player_games ADD COLUMN IF NOT EXISTS fta DOUBLE;
+ALTER TABLE nba_player_games ADD COLUMN IF NOT EXISTS ftm DOUBLE;
+ALTER TABLE nba_player_games ADD COLUMN IF NOT EXISTS oreb DOUBLE;
+ALTER TABLE nba_player_games ADD COLUMN IF NOT EXISTS dreb DOUBLE;
 
 -- Possession-level data from pbpstats (live-data provider — see
 -- backend/ingest/nba_pbpstats.py for why: pbpstats' stats_nba and data_nba

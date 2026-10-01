@@ -36,6 +36,7 @@ FEATURE_COLUMNS = [
     "min_roll3", "min_roll5", "min_roll10", "min_roll_season", "min_std10",
     "pts_roll3", "pts_roll5", "pts_roll10", "pts_roll_season", "pts_std10",
     "reb_roll10", "ast_roll10", "fg3m_roll10", "stl_roll10", "blk_roll10", "tov_roll10",
+    "usage_rate_roll10", "team_pace_roll10", "opp_pace_roll10", "opp_def_vs_position_pts_roll10",
     "home_flag",
 ]
 TARGET_COLUMN = "minutes"

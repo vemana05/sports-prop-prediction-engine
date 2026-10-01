@@ -15,8 +15,12 @@ data/raw/**
 !data/raw/.gitkeep
 !data/raw/pbpstats/
 !data/raw/pbpstats/.gitkeep
+data/models/**
 *.duckdb
 *.duckdb.wal
+
+# logs
+logs/
 
 # node / next.js
 node_modules/

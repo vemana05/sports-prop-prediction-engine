@@ -39,6 +39,12 @@ _COLUMNS = {
     "STL": "stl",
     "BLK": "blk",
     "TOV": "tov",
+    "FGA": "fga",
+    "FGM": "fgm",
+    "FTA": "fta",
+    "FTM": "ftm",
+    "OREB": "oreb",
+    "DREB": "dreb",
 }
 
 
@@ -89,13 +95,21 @@ def _write(conn: duckdb.DuckDBPyConnection, df: pd.DataFrame) -> int:
     conn.execute(
         """
         INSERT INTO nba_player_games
+            (player_id_nba, player_name, team, opponent, game_id, game_date, season,
+             home_away, minutes, pts, reb, ast, fg3m, stl, blk, tov,
+             fga, fgm, fta, ftm, oreb, dreb,
+             source_published_at, ingested_at)
         SELECT player_id_nba, player_name, team, opponent, game_id, game_date, season,
                home_away, minutes, pts, reb, ast, fg3m, stl, blk, tov,
+               fga, fgm, fta, ftm, oreb, dreb,
                source_published_at, ingested_at
         FROM df_nba_games
         ON CONFLICT (player_id_nba, game_id) DO UPDATE SET
             pts = excluded.pts, reb = excluded.reb, ast = excluded.ast,
-            minutes = excluded.minutes, ingested_at = excluded.ingested_at
+            minutes = excluded.minutes,
+            fga = excluded.fga, fgm = excluded.fgm, fta = excluded.fta, ftm = excluded.ftm,
+            oreb = excluded.oreb, dreb = excluded.dreb,
+            ingested_at = excluded.ingested_at
         """
     )
     conn.unregister("df_nba_games")

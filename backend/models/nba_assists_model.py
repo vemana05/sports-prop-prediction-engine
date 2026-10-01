@@ -23,13 +23,17 @@ if __name__ == "__main__":
         model_mae = (results["predicted_mean"] - results[TARGET_COLUMN]).abs().mean()
         print(f"  model:       MAE {model_mae:.3f} (n={len(results)})")
 
-        print("\nFree synthetic-line calibration (line = player's own 10-game rolling average, rounded to .5):")
+        print("\nFree synthetic-line calibration, before vs. after isotonic (line = player's own 10-game rolling average, rounded to .5):")
         calib = run_synthetic_line_calibration(
             results, target_column=TARGET_COLUMN, line_source_column=LINE_SOURCE_COLUMN,
             predicted_mean_col="predicted_mean", extra_col="dispersion_r",
             p_over_fn=mm.p_over_nb, market_name="assists", chart_path="reports/calibration_assists.png",
         )
-        print(calib.to_string(index=False))
+        print("Before (raw):")
+        print(calib["raw"].to_string(index=False))
+        print("After (isotonic):")
+        print(calib["calibrated"].to_string(index=False))
+        print(f"Mean abs calibration error: {calib['raw_mean_abs_calibration_error']:.4f} -> {calib['calibrated_mean_abs_calibration_error']:.4f} (n={calib['n']})")
         print("Chart saved to reports/calibration_assists.png")
     finally:
         conn.close()

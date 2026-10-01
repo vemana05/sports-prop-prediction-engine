@@ -28,10 +28,12 @@ from backend.features.nba_current_form import build_current_form
 from backend.ingest.util import IngestResult, logger, utcnow
 from backend.models import nba_market_model as mm
 from backend.models import nba_minutes_model, nba_points_model
+from backend.models.model_cache import get_or_train_booster
 from backend.models.nba_minutes_model import FEATURE_COLUMNS
 
 LOOKAHEAD_HOURS = 48
 MODEL_VERSION = "phase2-v1"
+MODEL_MAX_AGE_DAYS = 7  # "weekly retrain" per spec Section 5.5
 
 _MARKET_MODELS = [
     ("rebounds", "reb", "reb_roll10"),
@@ -42,6 +44,16 @@ _MARKET_MODELS = [
 
 def _team_id_to_abbrev() -> dict[str, str]:
     return {str(t["id"]): t["abbreviation"] for t in nba_static_teams.get_teams()}
+
+
+def _train_points(conn: duckdb.DuckDBPyConnection) -> tuple:
+    model, sigma = nba_points_model.train_final_model(conn)
+    return model, {"sigma": sigma}
+
+
+def _train_market(conn: duckdb.DuckDBPyConnection, target: str, line_col: str) -> tuple:
+    model, r = mm.train_final_model(conn, target, line_col)
+    return model, {"r": r}
 
 
 def upcoming_games(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
@@ -93,12 +105,20 @@ def run(conn: duckdb.DuckDBPyConnection | None = None) -> IngestResult:
         X = feature_rows[FEATURE_COLUMNS].copy()
         X["is_back_to_back"] = X["is_back_to_back"].astype(float)
 
-        logger.info("log_predictions: training models on full history (minutes, points, rebounds, assists, fg3m)")
-        minutes_model = nba_minutes_model.train_final_model(conn)
-        points_model, points_sigma = nba_points_model.train_final_model(conn)
-        market_models = {
-            name: mm.train_final_model(conn, target, line_col) for name, target, line_col in _MARKET_MODELS
-        }
+        logger.info("log_predictions: loading models (minutes, points, rebounds, assists, fg3m) — cached if <%dd old, else retraining", MODEL_MAX_AGE_DAYS)
+        minutes_model, _ = get_or_train_booster(
+            "minutes", lambda: (nba_minutes_model.train_final_model(conn), {}), MODEL_MAX_AGE_DAYS
+        )
+        points_model, points_extra = get_or_train_booster(
+            "points", lambda: _train_points(conn), MODEL_MAX_AGE_DAYS
+        )
+        points_sigma = points_extra["sigma"]
+        market_models = {}
+        for name, target, line_col in _MARKET_MODELS:
+            model, extra = get_or_train_booster(
+                name, lambda target=target, line_col=line_col: _train_market(conn, target, line_col), MODEL_MAX_AGE_DAYS
+            )
+            market_models[name] = (model, extra["r"])
 
         now = utcnow()
         log_rows = []
