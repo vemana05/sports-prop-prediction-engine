@@ -35,3 +35,5 @@ out/
 data/bets.sqlite
 # schedule projections cache (recomputed daily)
 data/projections/
+# TypeScript incremental build cache
+frontend/tsconfig.tsbuildinfo
