@@ -90,6 +90,7 @@ def run_synthetic_line_calibration(
     predicted_mean_col: str = "predicted_mean",
     extra_col: str = "sigma",
     n_buckets: int = 10,
+    p_over_frame_fn: Callable[[pd.DataFrame, np.ndarray], np.ndarray] | None = None,
 ) -> dict:
     """`p_over_fn(predicted_mean, extra, line) -> P(actual > line)` —
     `extra` is whatever the distribution needs beyond the mean (sigma for
@@ -97,12 +98,19 @@ def run_synthetic_line_calibration(
     dict with `raw` and `calibrated` bucketed tables (predicted vs. actual
     hit rate per bucket) and summary calibration-error numbers; saves a
     before/after chart to `chart_path`.
+
+    `p_over_frame_fn(rows, line)`, if given, replaces `p_over_fn` for
+    distributions that need more than one column per row (NFL yards use a
+    per-fold empirical residual distribution — see nfl_market_model.py).
     """
     df = results.dropna(subset=[line_source_column, predicted_mean_col, extra_col]).copy()
     df["synthetic_line"] = make_synthetic_line(df[line_source_column])
-    df["predicted_p_over"] = p_over_fn(
-        df[predicted_mean_col].values, df[extra_col].values, df["synthetic_line"].values
-    )
+    if p_over_frame_fn is not None:
+        df["predicted_p_over"] = p_over_frame_fn(df, df["synthetic_line"].values)
+    else:
+        df["predicted_p_over"] = p_over_fn(
+            df[predicted_mean_col].values, df[extra_col].values, df["synthetic_line"].values
+        )
     df["actual_over"] = (df[target_column] > df["synthetic_line"]).astype(int)
     df["calibrated_p_over"] = _fit_walk_forward_isotonic(df, "predicted_p_over", "actual_over")
 

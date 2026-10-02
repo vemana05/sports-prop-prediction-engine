@@ -1,0 +1,464 @@
+{
+ "test_seasons": [
+  2022,
+  2023,
+  2024,
+  2025,
+  2026
+ ],
+ "markets": {
+  "passing_yards": {
+   "label": "Passing yards",
+   "baselines": {
+    "n": 2557,
+    "model_mae": 60.871,
+    "last5_avg_mae": 72.855,
+    "season_avg_mae": 72.102,
+    "shrunk_last5_mae": 62.987,
+    "by_season": {
+     "2022": {
+      "n": 602,
+      "model_mae": 60.035,
+      "last5_avg_mae": 70.383
+     },
+     "2023": {
+      "n": 614,
+      "model_mae": 64.754,
+      "last5_avg_mae": 73.486
+     },
+     "2024": {
+      "n": 622,
+      "model_mae": 60.707,
+      "last5_avg_mae": 73.653
+     },
+     "2025": {
+      "n": 616,
+      "model_mae": 58.216,
+      "last5_avg_mae": 74.442
+     },
+     "2026": {
+      "n": 103,
+      "model_mae": 59.475,
+      "last5_avg_mae": 69.228
+     }
+    },
+    "by_position": {
+     "QB": {
+      "n": 2557,
+      "model_mae": 60.871,
+      "last5_avg_mae": 72.855
+     }
+    },
+    "no_history_rows": {
+     "n": 12,
+     "model_mae": 45.445,
+     "position_prior_mae": 65.908
+    }
+   },
+   "calibration": {
+    "n": 2557,
+    "raw_mean_abs_calibration_error": 0.0273,
+    "calibrated_mean_abs_calibration_error": 0.0313,
+    "raw_buckets": [
+     {
+      "predicted": 0.143,
+      "actual": 0.121,
+      "n": 257
+     },
+     {
+      "predicted": 0.298,
+      "actual": 0.294,
+      "n": 255
+     },
+     {
+      "predicted": 0.378,
+      "actual": 0.354,
+      "n": 257
+     },
+     {
+      "predicted": 0.449,
+      "actual": 0.481,
+      "n": 258
+     },
+     {
+      "predicted": 0.51,
+      "actual": 0.488,
+      "n": 252
+     },
+     {
+      "predicted": 0.57,
+      "actual": 0.533,
+      "n": 255
+     },
+     {
+      "predicted": 0.63,
+      "actual": 0.574,
+      "n": 256
+     },
+     {
+      "predicted": 0.69,
+      "actual": 0.695,
+      "n": 256
+     },
+     {
+      "predicted": 0.765,
+      "actual": 0.749,
+      "n": 255
+     },
+     {
+      "predicted": 0.895,
+      "actual": 0.84,
+      "n": 256
+     }
+    ],
+    "chart": "reports/calibration_nfl_passing_yards.png"
+   }
+  },
+  "rushing_yards": {
+   "label": "Rushing yards",
+   "baselines": {
+    "n": 7627,
+    "model_mae": 19.052,
+    "last5_avg_mae": 20.017,
+    "season_avg_mae": 19.881,
+    "shrunk_last5_mae": 19.335,
+    "by_season": {
+     "2022": {
+      "n": 1827,
+      "model_mae": 19.88,
+      "last5_avg_mae": 20.569
+     },
+     "2023": {
+      "n": 1835,
+      "model_mae": 18.161,
+      "last5_avg_mae": 19.127
+     },
+     "2024": {
+      "n": 1865,
+      "model_mae": 19.415,
+      "last5_avg_mae": 20.141
+     },
+     "2025": {
+      "n": 1796,
+      "model_mae": 18.941,
+      "last5_avg_mae": 20.126
+     },
+     "2026": {
+      "n": 304,
+      "model_mae": 17.896,
+      "last5_avg_mae": 20.669
+     }
+    },
+    "by_position": {
+     "QB": {
+      "n": 2557,
+      "model_mae": 12.134,
+      "last5_avg_mae": 12.685
+     },
+     "RB": {
+      "n": 5070,
+      "model_mae": 22.542,
+      "last5_avg_mae": 23.715
+     }
+    },
+    "no_history_rows": {
+     "n": 58,
+     "model_mae": 15.423,
+     "position_prior_mae": 17.736
+    }
+   },
+   "calibration": {
+    "n": 7627,
+    "raw_mean_abs_calibration_error": 0.03,
+    "calibrated_mean_abs_calibration_error": 0.0233,
+    "raw_buckets": [
+     {
+      "predicted": 0.168,
+      "actual": 0.215,
+      "n": 763
+     },
+     {
+      "predicted": 0.258,
+      "actual": 0.301,
+      "n": 763
+     },
+     {
+      "predicted": 0.308,
+      "actual": 0.328,
+      "n": 763
+     },
+     {
+      "predicted": 0.349,
+      "actual": 0.362,
+      "n": 763
+     },
+     {
+      "predicted": 0.388,
+      "actual": 0.425,
+      "n": 762
+     },
+     {
+      "predicted": 0.424,
+      "actual": 0.405,
+      "n": 763
+     },
+     {
+      "predicted": 0.464,
+      "actual": 0.465,
+      "n": 762
+     },
+     {
+      "predicted": 0.514,
+      "actual": 0.511,
+      "n": 763
+     },
+     {
+      "predicted": 0.583,
+      "actual": 0.538,
+      "n": 762
+     },
+     {
+      "predicted": 0.724,
+      "actual": 0.651,
+      "n": 763
+     }
+    ],
+    "chart": "reports/calibration_nfl_rushing_yards.png"
+   }
+  },
+  "receiving_yards": {
+   "label": "Receiving yards",
+   "baselines": {
+    "n": 14284,
+    "model_mae": 20.911,
+    "last5_avg_mae": 21.923,
+    "season_avg_mae": 21.84,
+    "shrunk_last5_mae": 21.196,
+    "by_season": {
+     "2022": {
+      "n": 3476,
+      "model_mae": 21.369,
+      "last5_avg_mae": 21.935
+     },
+     "2023": {
+      "n": 3496,
+      "model_mae": 20.935,
+      "last5_avg_mae": 22.155
+     },
+     "2024": {
+      "n": 3473,
+      "model_mae": 20.699,
+      "last5_avg_mae": 21.633
+     },
+     "2025": {
+      "n": 3274,
+      "model_mae": 20.597,
+      "last5_avg_mae": 21.876
+     },
+     "2026": {
+      "n": 565,
+      "model_mae": 21.077,
+      "last5_avg_mae": 22.459
+     }
+    },
+    "by_position": {
+     "RB": {
+      "n": 3550,
+      "model_mae": 13.436,
+      "last5_avg_mae": 14.221
+     },
+     "TE": {
+      "n": 2926,
+      "model_mae": 19.595,
+      "last5_avg_mae": 20.402
+     },
+     "WR": {
+      "n": 7808,
+      "model_mae": 24.804,
+      "last5_avg_mae": 25.994
+     }
+    },
+    "no_history_rows": {
+     "n": 55,
+     "model_mae": 19.975,
+     "position_prior_mae": 19.685
+    }
+   },
+   "calibration": {
+    "n": 14284,
+    "raw_mean_abs_calibration_error": 0.0207,
+    "calibrated_mean_abs_calibration_error": 0.0222,
+    "raw_buckets": [
+     {
+      "predicted": 0.194,
+      "actual": 0.22,
+      "n": 1429
+     },
+     {
+      "predicted": 0.28,
+      "actual": 0.298,
+      "n": 1428
+     },
+     {
+      "predicted": 0.328,
+      "actual": 0.313,
+      "n": 1429
+     },
+     {
+      "predicted": 0.364,
+      "actual": 0.37,
+      "n": 1428
+     },
+     {
+      "predicted": 0.399,
+      "actual": 0.393,
+      "n": 1428
+     },
+     {
+      "predicted": 0.433,
+      "actual": 0.419,
+      "n": 1428
+     },
+     {
+      "predicted": 0.472,
+      "actual": 0.468,
+      "n": 1432
+     },
+     {
+      "predicted": 0.516,
+      "actual": 0.514,
+      "n": 1425
+     },
+     {
+      "predicted": 0.571,
+      "actual": 0.535,
+      "n": 1429
+     },
+     {
+      "predicted": 0.675,
+      "actual": 0.594,
+      "n": 1428
+     }
+    ],
+    "chart": "reports/calibration_nfl_receiving_yards.png"
+   }
+  },
+  "receptions": {
+   "label": "Receptions",
+   "baselines": {
+    "n": 14284,
+    "model_mae": 1.563,
+    "last5_avg_mae": 1.646,
+    "season_avg_mae": 1.649,
+    "shrunk_last5_mae": 1.596,
+    "by_season": {
+     "2022": {
+      "n": 3476,
+      "model_mae": 1.623,
+      "last5_avg_mae": 1.691
+     },
+     "2023": {
+      "n": 3496,
+      "model_mae": 1.554,
+      "last5_avg_mae": 1.634
+     },
+     "2024": {
+      "n": 3473,
+      "model_mae": 1.55,
+      "last5_avg_mae": 1.622
+     },
+     "2025": {
+      "n": 3274,
+      "model_mae": 1.522,
+      "last5_avg_mae": 1.631
+     },
+     "2026": {
+      "n": 565,
+      "model_mae": 1.566,
+      "last5_avg_mae": 1.672
+     }
+    },
+    "by_position": {
+     "RB": {
+      "n": 3550,
+      "model_mae": 1.39,
+      "last5_avg_mae": 1.477
+     },
+     "TE": {
+      "n": 2926,
+      "model_mae": 1.591,
+      "last5_avg_mae": 1.664
+     },
+     "WR": {
+      "n": 7808,
+      "model_mae": 1.631,
+      "last5_avg_mae": 1.716
+     }
+    },
+    "no_history_rows": {
+     "n": 55,
+     "model_mae": 1.316,
+     "position_prior_mae": 1.258
+    }
+   },
+   "calibration": {
+    "n": 14284,
+    "raw_mean_abs_calibration_error": 0.0157,
+    "calibrated_mean_abs_calibration_error": 0.0093,
+    "raw_buckets": [
+     {
+      "predicted": 0.181,
+      "actual": 0.197,
+      "n": 1429
+     },
+     {
+      "predicted": 0.255,
+      "actual": 0.256,
+      "n": 1428
+     },
+     {
+      "predicted": 0.3,
+      "actual": 0.297,
+      "n": 1428
+     },
+     {
+      "predicted": 0.336,
+      "actual": 0.346,
+      "n": 1429
+     },
+     {
+      "predicted": 0.37,
+      "actual": 0.376,
+      "n": 1428
+     },
+     {
+      "predicted": 0.406,
+      "actual": 0.387,
+      "n": 1428
+     },
+     {
+      "predicted": 0.442,
+      "actual": 0.437,
+      "n": 1429
+     },
+     {
+      "predicted": 0.482,
+      "actual": 0.448,
+      "n": 1428
+     },
+     {
+      "predicted": 0.538,
+      "actual": 0.524,
+      "n": 1428
+     },
+     {
+      "predicted": 0.654,
+      "actual": 0.605,
+      "n": 1429
+     }
+    ],
+    "chart": "reports/calibration_nfl_receptions.png"
+   }
+  }
+ }
+}

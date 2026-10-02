@@ -1,0 +1,42 @@
+stadium_id,names,lat,lon,default_roof,timezone
+ATL97,Mercedes-Benz Stadium,33.7554,-84.4008,closed,America/New_York
+BAL00,M&T Bank Stadium,39.2780,-76.6227,outdoors,America/New_York
+BOS00,Gillette Stadium,42.0909,-71.2643,outdoors,America/New_York
+BUF00,Highmark Stadium|New Era Field,42.7738,-78.7870,outdoors,America/New_York
+CAR00,Bank of America Stadium,35.2258,-80.8528,outdoors,America/New_York
+CHI98,Soldier Field,41.8623,-87.6167,outdoors,America/Chicago
+CIN00,Paycor Stadium|Paul Brown Stadium,39.0955,-84.5161,outdoors,America/New_York
+CLE00,Huntington Bank Field|FirstEnergy Stadium,41.5061,-81.6995,outdoors,America/New_York
+DAL00,AT&T Stadium,32.7473,-97.0945,closed,America/Chicago
+DEN00,Empower Field at Mile High,39.7439,-105.0201,outdoors,America/Denver
+DET00,Ford Field,42.3400,-83.0456,dome,America/Detroit
+FRA00,Deutsche Bank Park,50.0686,8.6455,outdoors,Europe/Berlin
+GER00,Allianz Arena,48.2188,11.6247,outdoors,Europe/Berlin
+GNB00,Lambeau Field,44.5013,-88.0622,outdoors,America/Chicago
+HOU00,NRG Stadium|Reliant Stadium,29.6847,-95.4107,closed,America/Chicago
+IND00,Lucas Oil Stadium,39.7601,-86.1639,closed,America/Indiana/Indianapolis
+JAX00,EverBank Stadium|TIAA Bank Stadium,30.3239,-81.6373,outdoors,America/New_York
+KAN00,GEHA Field at Arrowhead Stadium|Arrowhead Stadium,39.0489,-94.4839,outdoors,America/Chicago
+LAX01,SoFi Stadium,33.9535,-118.3392,dome,America/Los_Angeles
+LON00,Wembley Stadium,51.5560,-0.2796,outdoors,Europe/London
+LON02,Tottenham Hotspur Stadium|Tottenham Stadium,51.6043,-0.0664,outdoors,Europe/London
+MAD01,Bernabeu,40.4531,-3.6883,closed,Europe/Madrid
+MEL00,Melbourne Cricket Ground,-37.8200,144.9834,outdoors,Australia/Melbourne
+MEX00,Estadio Banorte|Azteca Stadium,19.3029,-99.1505,outdoors,America/Mexico_City
+MIA00,Hard Rock Stadium,25.9580,-80.2389,outdoors,America/New_York
+MIN01,U.S. Bank Stadium,44.9737,-93.2577,dome,America/Chicago
+MUN01,FC Bayern Munich Stadium,48.2188,11.6247,outdoors,Europe/Berlin
+NAS00,Nissan Stadium,36.1665,-86.7713,outdoors,America/Chicago
+NOR00,Caesars Superdome|Mercedes-Benz Superdome,29.9511,-90.0812,dome,America/Chicago
+NYC01,MetLife Stadium,40.8135,-74.0745,outdoors,America/New_York
+PAR00,Stade de France,48.9244,2.3602,outdoors,Europe/Paris
+PHI00,Lincoln Financial Field,39.9008,-75.1675,outdoors,America/New_York
+PHO00,State Farm Stadium,33.5276,-112.2626,closed,America/Phoenix
+PIT00,Acrisure Stadium|Heinz Field,40.4468,-80.0158,outdoors,America/New_York
+RIO00,Maracana Stadium,-22.9122,-43.2302,outdoors,America/Sao_Paulo
+SAO00,Arena Corinthians,-23.5453,-46.4742,outdoors,America/Sao_Paulo
+SEA00,Lumen Field|CenturyLink Field,47.5952,-122.3316,outdoors,America/Los_Angeles
+SFO01,Levi's Stadium,37.4030,-121.9700,outdoors,America/Los_Angeles
+TAM00,Raymond James Stadium,27.9759,-82.5033,outdoors,America/New_York
+VEG00,Allegiant Stadium,36.0909,-115.1833,dome,America/Los_Angeles
+WAS00,Northwest Stadium|FedExField,38.9076,-76.8645,outdoors,America/New_York

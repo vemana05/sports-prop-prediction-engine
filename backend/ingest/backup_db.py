@@ -1,4 +1,5 @@
-"""Timestamped backups of warehouse.duckdb.
+"""Timestamped backups of warehouse.duckdb (or, with --db, any other
+DuckDB file such as data/nfl_warehouse.duckdb).
 
 Meant to run (via Docker — see the rebuild commands in the repo) after each
 ingestion rebuild stage, so a bad or interrupted stage can be rolled back by
@@ -31,12 +32,14 @@ def backup_warehouse(db_path: str | None = None, backup_dir: str | None = None, 
     backup_dir = Path(backup_dir or os.environ.get("DUCKDB_BACKUP_DIR", "data/backups"))
     backup_dir.mkdir(parents=True, exist_ok=True)
 
+    # Backups are named after the source file's stem, so warehouse_* and
+    # nfl_warehouse_* backups are pruned independently of each other.
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    dest = backup_dir / f"warehouse_{timestamp}.duckdb"
+    dest = backup_dir / f"{db_path.stem}_{timestamp}.duckdb"
     shutil.copy2(db_path, dest)
     logger.info("backup: wrote %s", dest)
 
-    existing = sorted(backup_dir.glob("warehouse_*.duckdb"), key=lambda p: p.name)
+    existing = sorted(backup_dir.glob(f"{db_path.stem}_2*.duckdb"), key=lambda p: p.name)
     for stale in existing[:-keep_last]:
         stale.unlink()
         logger.info("backup: pruned old backup %s", stale)
@@ -47,9 +50,10 @@ def backup_warehouse(db_path: str | None = None, backup_dir: str | None = None, 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Back up warehouse.duckdb to data/backups/, keeping the last N")
+    parser = argparse.ArgumentParser(description="Back up a DuckDB file to data/backups/, keeping the last N")
     parser.add_argument("--keep", type=int, default=DEFAULT_KEEP_LAST, help="Number of backups to retain (default 3)")
+    parser.add_argument("--db", default=None, help="DuckDB file to back up (default: warehouse.duckdb)")
     args = parser.parse_args()
 
-    result = backup_warehouse(keep_last=args.keep)
-    print(f"backup complete: {result}" if result else "backup skipped: no warehouse.duckdb found")
+    result = backup_warehouse(db_path=args.db, keep_last=args.keep)
+    print(f"backup complete: {result}" if result else "backup skipped: database file not found")

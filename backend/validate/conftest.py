@@ -14,3 +14,13 @@ def conn():
     connection = duckdb.connect(path, read_only=True)
     yield connection
     connection.close()
+
+
+@pytest.fixture(scope="session")
+def nfl_conn():
+    path = os.environ.get("NFL_DUCKDB_PATH", "data/nfl_warehouse.duckdb")
+    if not os.path.exists(path):
+        pytest.skip(f"no NFL warehouse at {path} — run backend.ingest.nfl_nflverse first")
+    connection = duckdb.connect(path, read_only=True)
+    yield connection
+    connection.close()

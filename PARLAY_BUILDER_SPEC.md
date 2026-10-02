@@ -135,6 +135,10 @@ Verify pricing/limits at signup; they change often. Everything below is grouped 
    substitute is forward paper-trading — log model predictions before each game, compare to the real line once
    it's pulled, see Section 5.7.
    - ⚠️ Other companies use nearly identical names (e.g. theoddsapi.com is a separate service). Use **the-odds-api.com, v4** only.
+   - **NFL shares this same 500-credit/month budget with NBA.** It is one API key and one monthly cap across all
+     sports, and the credit guard (`ODDS_API_MONTHLY_CREDIT_BUDGET`, default 450) counts both. NFL odds collection
+     is **not enabled** (2026-10-02). Before turning it on, size both leagues' daily pulls together: NBA
+     `player_points` alone costs 1 credit per event per day.
 2. **Secondary odds source** (pick one, free tier only) for cross-checking lines and filling gaps: **SportsGameOdds** or **OddsPapi**. Verify at signup that historical player-prop odds are actually included free, not just advertised — see Section 5.7's findings for OddsPapi specifically.
 3. **Odds snapshot store:** save every pull with a timestamp. This enables:
    - Line-movement charts in the UI
@@ -499,6 +503,31 @@ bias grew (−0.88 → −1.31).
 
 **Future idea:** compute rolling averages from normal-minutes games only,
 and model points as points-per-minute × projected minutes.
+
+### 5.10 Phase 6 progress (NFL, 2026-10-02)
+
+**Data.** `backend/ingest/nfl_nflverse.py` loads nflverse player stats, snap counts, schedules, injuries, depth
+charts and weekly rosters for 2020–2026 into a separate file, `data/nfl_warehouse.duckdb` (`backend/nfl_db.py`),
+so NFL jobs never contend for the NBA warehouse's write lock. Raw downloads are cached in `data/raw/nfl/`, and a
+backup is taken after each stage (`backup_db.py --db`). `weather_openmeteo.py` adds kickoff-hour forecasts for
+outdoor games from 2021 on. Venues are in `config/nfl_venues.csv`, matched by stadium name first because nflverse
+sometimes reuses a home team's stadium id for international games. NGS, FTN, participation and Sleeper NFL
+are not used yet.
+
+**Features** (`backend/features/nfl_features.py`, leakage tests in `backend/validate/test_nfl_features.py`):
+rolling 3/5/season stats, snap/target/air-yards/carry share, prior season, opponent allowed-vs-position (last 6),
+team volume, teammates out (from the injury report), depth rank, rest, home/away, roof, surface and weather.
+Rows include snap-only games (0 catches is a 0, not a missing game). nflverse's depth charts changed format in
+2025 (per-slot weekly ranks → dated snapshots ranked across the position), so both are re-ranked into one
+ordinal per team-game.
+
+**Models** (`backend/models/nfl_market_model.py`): walk-forward by season, testing 2022–2026 (2026 = weeks 1–4).
+Shrinkage toward the average for the same position and depth rank comes in through `*_shrunk` features. Yards
+use an empirical standardized-residual distribution, and receptions a Negative Binomial. Both spreads are fit on
+out-of-fold residuals. Results are in `reports/nfl_model_performance.json`, with charts in
+`reports/calibration_nfl_*.png`.
+
+**NFL odds collection stays off** (see 3.5: shared 500-credit budget). The UI shows projections only.
 
 ---
 

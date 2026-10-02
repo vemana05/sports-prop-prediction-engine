@@ -2,8 +2,10 @@
 # if a `priority: primary` source fails, it falls back to the next-priority
 # source that provides the same data type and logs the fallback.
 #
-# Only Phase 1 (NBA data foundation) sources are registered so far.
-# NFL sources, odds sources, and premium upgrades are added in later phases.
+# NFL sources (Phase 6) write to their own file, data/nfl_warehouse.duckdb;
+# their run() ignores the NBA connection the runner passes in.
+# NFL odds are deliberately NOT registered: The Odds API's 500 credits/month
+# are shared with NBA (spec Section 3.5 / 5.10).
 
 - name: nba_api
   league: nba
@@ -76,3 +78,25 @@
   license: "commercial API, free tier only (500 credits/mo) — see Section 5.7"
   module: backend.ingest.odds_theoddsapi
   note: "no-ops cleanly with a warning if ODDS_API_KEY is unset; credit-budget-guarded, see ODDS_API_MONTHLY_CREDIT_BUDGET"
+
+- name: nflverse
+  league: nfl
+  provides: [nfl_player_stats, nfl_snap_counts, nfl_schedule, nfl_injuries, nfl_depth_charts, nfl_rosters]
+  priority: primary
+  refresh: "daily"
+  rate_limit_per_min: 30
+  auth_env_var: null
+  license: "CC-BY 4.0 (nflverse); attribution in app footer"
+  module: backend.ingest.nfl_nflverse
+  note: "raw downloads cached under data/raw/nfl/; completed seasons are never re-downloaded"
+
+- name: open_meteo
+  league: nfl
+  provides: [nfl_weather]
+  priority: primary
+  refresh: "daily"
+  rate_limit_per_min: 60
+  auth_env_var: null
+  license: "CC BY 4.0, free for non-commercial use (~10,000 calls/day)"
+  module: backend.ingest.weather_openmeteo
+  note: "outdoor games only; historical-forecast archive for played games, live forecast within 15 days"
