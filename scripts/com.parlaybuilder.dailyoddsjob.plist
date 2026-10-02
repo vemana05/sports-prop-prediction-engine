@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/vemana/Downloads/Betting App/scripts/daily_odds_job.sh</string>
+        <string>/Users/vemana/Projects/BettingApp/scripts/daily_odds_job.sh</string>
     </array>
 
     <!-- 10:00 AM — this Mac's system timezone is already America/New_York
@@ -26,9 +26,9 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/Users/vemana/Downloads/Betting App/logs/launchd_stdout.log</string>
+    <string>/Users/vemana/Projects/BettingApp/logs/launchd_stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/vemana/Downloads/Betting App/logs/launchd_stderr.log</string>
+    <string>/Users/vemana/Projects/BettingApp/logs/launchd_stderr.log</string>
 
     <!-- Don't fire immediately on `launchctl load` — only at the scheduled
          time. Load it once, any day, and the first real run is the next

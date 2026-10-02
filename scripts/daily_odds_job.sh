@@ -1,4 +1,5 @@
 #!/bin/bash
+export PATH="/Users/vemana/.docker/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 # Daily forward-collection job (spec Section 5.7): log predictions for every
 # upcoming game, THEN pull real odds — in that order, so a prediction is
 # always on record before the matching line. Meant to run once a day,
@@ -28,6 +29,15 @@ if ! docker info >/dev/null 2>&1; then
     echo "ERROR: Docker daemon is not running — cannot proceed. Is Docker Desktop open?" | tee -a "$LOG_FILE"
     exit 1
 fi
+
+# DuckDB allows a single writer: if the api container has warehouse.duckdb
+# open, stop it for the run and bring it back on exit (success or failure).
+if [ -n "$(docker compose ps -q --status running api)" ]; then
+    echo "--- stopping api container (holds warehouse.duckdb lock) ---" | tee -a "$LOG_FILE"
+    docker compose stop api >>"$LOG_FILE" 2>&1
+    trap 'docker compose start api >>"$LOG_FILE" 2>&1' EXIT
+fi
+
 
 echo "--- step 1/2: logging predictions ---" | tee -a "$LOG_FILE"
 docker compose run --rm backend python -m backend.predict.log_predictions 2>&1 | tee -a "$LOG_FILE"
