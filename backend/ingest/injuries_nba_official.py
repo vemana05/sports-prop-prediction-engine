@@ -24,18 +24,37 @@ seasons) — what the Phase 2 walk-forward backtest actually needs. It does
 NOT pull the full 15-minute-snapshot archive (`backfill_range()` does that,
 exhaustively, for a narrower date range if ever needed) — one report per day
 is enough to know who was hurt before that day's games.
+
+Raw PDF caching: `fetch_report` downloads the report PDF itself (via
+`injury.gen_url`) and saves it to `data/raw/injuries/<same filename NBA
+uses>.pdf` before ever asking `nbainjuries` to parse it. A re-run (or a
+from-scratch rebuild after dropping warehouse.duckdb) replays from that
+cached PDF via `nbainjuries`' own built-in `local=True` mode instead of
+re-downloading — `gen_url(timestamp)`'s basename is exactly the filename
+`get_reportdata(..., local=True, localdir=...)` looks for, so no separate
+naming logic is needed here.
 """
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import duckdb
 import pandas as pd
+import requests
 from nbainjuries import injury
 
 from backend.db import get_connection, next_log_id
 from backend.ingest.util import IngestResult, logger, retry, utcnow
+
+# Used only to download the raw PDF for caching (nbainjuries does its own
+# validation/parsing requests separately with its own default headers) — a
+# plain desktop user-agent is enough, the NBA's static PDF host needs no auth.
+_DOWNLOAD_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+}
 
 # nbainjuries compares the timestamp you pass against its own naive (no
 # tzinfo) reference datetimes internally, so timestamps here must stay naive
@@ -65,8 +84,38 @@ def _find_valid_timestamp(start: datetime, max_days_back: int = 14) -> datetime 
     return None
 
 
+def _cache_dir() -> Path:
+    return Path(os.environ.get("NBA_INJURIES_CACHE_DIR", "data/raw/injuries"))
+
+
+def _cache_path(timestamp: datetime) -> Path:
+    # Same basename nbainjuries' own local-file lookup (_gen_filepath) expects —
+    # gen_url()'s URL and the local filename share the identical date+time stem.
+    return _cache_dir() / injury.gen_url(timestamp).rsplit("/", 1)[-1]
+
+
+def _ensure_cached(timestamp: datetime) -> None:
+    cache_path = _cache_path(timestamp)
+    if cache_path.is_file():
+        return
+    url = injury.gen_url(timestamp)
+
+    def _call():
+        resp = requests.get(url, headers=_DOWNLOAD_HEADERS, timeout=30)
+        resp.raise_for_status()
+        return resp.content
+
+    pdf_bytes = retry(_call, what=f"download injury report PDF {url}")
+    _cache_dir().mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(pdf_bytes)
+
+
 def fetch_report(timestamp: datetime) -> pd.DataFrame:
-    df = retry(lambda: injury.get_reportdata(timestamp, return_df=True), what=f"get_reportdata({timestamp})")
+    _ensure_cached(timestamp)
+    df = retry(
+        lambda: injury.get_reportdata(timestamp, local=True, localdir=str(_cache_dir()), return_df=True),
+        what=f"get_reportdata({timestamp}) [cached]",
+    )
     if df is None or df.empty:
         return pd.DataFrame(columns=list(_COLUMN_MAP.values()))
     out = df.rename(columns=_COLUMN_MAP)[list(_COLUMN_MAP.values())]

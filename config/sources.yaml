@@ -54,7 +54,7 @@
   auth_env_var: null
   license: "unofficial stats.nba.com wrapper; no redistribution terms published"
   module: backend.ingest.nba_box_status
-  note: "run() is resumable/incremental (only processes game_ids not yet in nba_box_status); fine for the daily runner once the initial backfill is done"
+  note: "run() is resumable/incremental (only processes game_ids not yet in nba_box_status); fine for the daily runner once the initial backfill is done. The initial backfill itself should use `python -m backend.ingest.nba_box_status --backfill`, which writes to its own separate DuckDB file and merges into warehouse.duckdb on completion — see the module docstring."
 
 - name: sleeper
   league: [nba, nfl]

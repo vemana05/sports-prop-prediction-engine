@@ -15,7 +15,33 @@ import duckdb
 
 DEFAULT_DB_PATH = "data/warehouse.duckdb"
 
-SCHEMA = """
+# Full team roster per game (played AND DNP/inactive) from nba_api's
+# BoxScoreTraditionalV3 — the only source we have that lists players who
+# did NOT play, with a comment explaining why (e.g. "DNP - Coach's
+# Decision", "NOT WITH TEAM", or blank for a true inactive/injury
+# designation). This is the ground truth `nba_player_availability` (below)
+# is built from — nba_player_games alone can't tell "DNP" from "not on the
+# roster" (see the note on nba_player_games in SCHEMA below).
+#
+# Pulled out as its own constant (instead of inlined in SCHEMA) because the
+# box_status backfill writes this same table into its own separate DuckDB
+# file (see backend/ingest/nba_box_status.py) and needs the identical
+# CREATE TABLE statement there — one definition, no drift.
+NBA_BOX_STATUS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS nba_box_status (
+    game_id          VARCHAR NOT NULL,
+    team_id          VARCHAR NOT NULL,
+    player_id_nba    VARCHAR NOT NULL,
+    player_name_raw  VARCHAR,
+    minutes_raw      VARCHAR,   -- "MM:SS" if played, NULL/blank if not
+    comment          VARCHAR,   -- DNP/inactive reason if not played, blank if played
+    ingested_at      TIMESTAMP NOT NULL,
+    PRIMARY KEY (game_id, player_id_nba)
+);
+"""
+
+SCHEMA = (
+    """
 CREATE TABLE IF NOT EXISTS ingestion_log (
     id              BIGINT PRIMARY KEY,
     source          VARCHAR NOT NULL,
@@ -136,25 +162,9 @@ CREATE TABLE IF NOT EXISTS nba_schedule (
     tip_utc        TIMESTAMPTZ NOT NULL,
     ingested_at    TIMESTAMP NOT NULL
 );
-
--- Full team roster per game (played AND DNP/inactive) from nba_api's
--- BoxScoreTraditionalV3 — the only source we have that lists players who
--- did NOT play, with a comment explaining why (e.g. "DNP - Coach's
--- Decision", "NOT WITH TEAM", or blank for a true inactive/injury
--- designation). This is the ground truth `nba_player_availability` (below)
--- is built from — nba_player_games alone can't tell "DNP" from "not on the
--- roster" (see the note on nba_player_games above).
-CREATE TABLE IF NOT EXISTS nba_box_status (
-    game_id          VARCHAR NOT NULL,
-    team_id          VARCHAR NOT NULL,
-    player_id_nba    VARCHAR NOT NULL,
-    player_name_raw  VARCHAR,
-    minutes_raw      VARCHAR,   -- "MM:SS" if played, NULL/blank if not
-    comment          VARCHAR,   -- DNP/inactive reason if not played, blank if played
-    ingested_at      TIMESTAMP NOT NULL,
-    PRIMARY KEY (game_id, player_id_nba)
-);
-
+"""
+    + NBA_BOX_STATUS_SCHEMA
+    + """
 -- Derived, point-in-time player availability per team-game (Section 5.2
 -- "games since return" / teammate-availability features read this, not
 -- nba_player_games directly). Built by backend/ingest/nba_availability.py
@@ -255,6 +265,7 @@ CREATE TABLE IF NOT EXISTS model_predictions_log (
     PRIMARY KEY (game_id, player_id_nba, market)
 );
 """
+)
 
 
 def get_connection(db_path: str | None = None) -> duckdb.DuckDBPyConnection:
