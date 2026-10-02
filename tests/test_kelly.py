@@ -75,3 +75,16 @@ def test_stake_below_book_minimum_becomes_zero():
 def test_zero_bankroll_gives_zero_stake_not_an_error():
     rec = recommend_stake(p=0.7, decimal_odds=2.0, bankroll=0, tier_cap_pct=0.02)
     assert rec.stake == 0.0
+
+
+def test_shrink_to_market_moves_thirty_percent_toward_the_no_vig_price():
+    # 0.70 model, 0.50 market, default weight 0.30 -> 0.70*0.7 + 0.50*0.3 = 0.64
+    from backend.bankroll.kelly import shrink_to_market
+
+    assert shrink_to_market(0.70, 0.50) == pytest.approx(0.64)
+
+
+def test_shrink_to_market_without_a_market_price_leaves_the_model_alone():
+    from backend.bankroll.kelly import shrink_to_market
+
+    assert shrink_to_market(0.70, None) == 0.70

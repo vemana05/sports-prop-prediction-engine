@@ -11,8 +11,40 @@ services:
       - ./reports:/app/reports
     command: ["python", "-m", "backend.ingest.runner"]
 
-  # frontend:
-  #   Next.js app (Section 10) — added in Phase 5. Not built yet.
+  # FastAPI over the parlay search + Kelly sizing (Section 10 UI backend).
+  # Same image as `backend`; source is mounted so code edits reload live.
+  api:
+    image: bettingapp-backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app/backend
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./reports:/app/reports
+      - ./tests:/app/tests
+    ports:
+      - "8000:8000"
+    command: ["uvicorn", "backend.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "backend"]
+
+  # Next.js UI (Section 10). Talks to `api` over the compose network via
+  # Next's /api rewrite, so the browser only ever sees one origin.
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      - API_URL=http://api:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
 
   # scheduler:
   #   APScheduler nightly ingest/retrain (Section 5.5 / Phase 7). Not built yet.

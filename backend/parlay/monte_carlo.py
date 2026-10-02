@@ -29,12 +29,12 @@ from typing import Any
 import numpy as np
 from scipy import stats
 
+from backend.bankroll.kelly import shrink_to_market
 from backend.models import nba_market_model as mm
 from backend.models.nba_points_model import p_over as normal_p_over
 from backend.parlay.correlations import correlation_for
 
 DEFAULT_N_SIMULATIONS = 20_000
-MODEL_SHRINK_TO_MARKET = float(__import__("os").environ.get("MODEL_SHRINK_TO_MARKET", "0.30"))
 
 
 @dataclass
@@ -98,11 +98,7 @@ class Leg:
         no-vig probability by MODEL_SHRINK_TO_MARKET before sizing. Falls
         back to the raw model probability if there's no market price to
         shrink toward."""
-        market_p = self.no_vig_p_hit()
-        model_p = self.p_hit()
-        if market_p is None:
-            return model_p
-        return model_p * (1 - MODEL_SHRINK_TO_MARKET) + market_p * MODEL_SHRINK_TO_MARKET
+        return shrink_to_market(self.p_hit(), self.no_vig_p_hit())
 
     def ppf(self, u: np.ndarray) -> np.ndarray:
         """Inverse CDF of this leg's marginal distribution, for copula sampling."""

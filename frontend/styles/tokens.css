@@ -1,0 +1,79 @@
+/*
+ * Design tokens (spec Section 10.3).
+ *
+ * Spec colors are used as-is for fills, markers and borders. Where a spec
+ * color misses WCAG AA (4.5:1) as *text* on --surface/--panel, a darker
+ * (light theme) or lighter (dark theme) `*-ink` variant is defined for
+ * text use only — e.g. --tier-risky #C98A12 is 2.95:1 on white, so risky
+ * labels use --tier-risky-ink #94650A (5.09:1).
+ *
+ * League: `data-league="nba|nfl"` on <html> swaps --accent.
+ * Theme:  `.dark` on <html>.
+ */
+
+:root {
+  --surface: #f3f5f8;
+  --panel: #ffffff;
+  --panel-2: #e9edf2; /* one color step above panel, for wells and tracks */
+  --border: #dbe1e9;
+  --ink: #16233a;
+  --muted: #5e6b80;
+
+  --nba-accent: #c47a3d;
+  --nba-accent-ink: #985826;
+  --nfl-accent: #2e7a4c;
+  --nfl-accent-ink: #2e7a4c;
+
+  --tier-safe: #23897c;
+  --tier-safe-ink: #1e7a6e;
+  --tier-risky: #c98a12;
+  --tier-risky-ink: #94650a;
+  --tier-danger: #c43d3d;
+  --tier-danger-ink: #b23535;
+
+  --edge-pos: #23897c;
+  --edge-neg: #8a94a6;
+
+  --accent: var(--nba-accent);
+  --accent-ink: var(--nba-accent-ink);
+
+  --slip-shadow: 0 1px 2px rgb(22 35 58 / 0.06), 0 12px 32px -8px rgb(22 35 58 / 0.22);
+
+  --radius-slip: 14px;
+  --radius-control: 8px;
+
+  color-scheme: light;
+}
+
+.dark {
+  --surface: #18222f;
+  --panel: #213043;
+  --panel-2: #2a3b51;
+  --border: #33465e;
+  --ink: #e8edf4;
+  --muted: #9aa7ba;
+
+  --nba-accent: #d99155;
+  --nba-accent-ink: #d99155;
+  --nfl-accent: #46a56b;
+  --nfl-accent-ink: #5bb87e;
+
+  --tier-safe: #3db3a3;
+  --tier-safe-ink: #3db3a3;
+  --tier-risky: #e3a93a;
+  --tier-risky-ink: #e3a93a;
+  --tier-danger: #e26464;
+  --tier-danger-ink: #ee8282;
+
+  --edge-pos: #3db3a3;
+  --edge-neg: #6f7b8f;
+
+  --slip-shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 16px 40px -8px rgb(0 0 0 / 0.55);
+
+  color-scheme: dark;
+}
+
+[data-league="nfl"] {
+  --accent: var(--nfl-accent);
+  --accent-ink: var(--nfl-accent-ink);
+}

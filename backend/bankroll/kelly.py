@@ -16,6 +16,21 @@ def kelly_fraction() -> float:
     return float(os.environ.get("KELLY_FRACTION", "0.25"))
 
 
+def model_shrink_to_market() -> float:
+    return float(os.environ.get("MODEL_SHRINK_TO_MARKET", "0.30"))
+
+
+def shrink_to_market(model_p: float, market_p: float | None, weight: float | None = None) -> float:
+    """Section 8 step 3: move the model's probability `weight` (default
+    MODEL_SHRINK_TO_MARKET, 0.30) of the way toward the book's no-vig
+    probability before sizing. With no market price, the model's own
+    probability is returned unchanged."""
+    if market_p is None:
+        return model_p
+    w = model_shrink_to_market() if weight is None else weight
+    return model_p * (1 - w) + market_p * w
+
+
 @dataclass
 class StakeRecommendation:
     model_p: float

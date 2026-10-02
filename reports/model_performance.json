@@ -1,0 +1,26 @@
+{
+  "as_of": "2026-10-02",
+  "tested_against_real_lines": false,
+  "real_line_note": "The model has not been tested against real sportsbook lines yet. The free odds tier has no historical player props, so the first real test starts when daily odds collection begins on Oct 20, 2026 and enough settled games pile up to compare predictions with closing lines.",
+  "walk_forward": {
+    "source": "Season walk-forward backtest (train on earlier seasons, test on the next, never random splits), all held-out seasons pooled. Numbers from the 2026-10-02 full rebuild, recorded in backend/parlay/predictor_choice.py.",
+    "baseline_name": "Player's own last-10-game average (minutes: last-3)",
+    "rows": [
+      { "market": "minutes", "label": "Minutes", "model_mae": 4.957, "naive_mae": 5.229, "used_live": "model" },
+      { "market": "points", "label": "Points", "model_mae": 4.593, "naive_mae": 4.693, "used_live": "model" },
+      { "market": "rebounds", "label": "Rebounds", "model_mae": 1.914, "naive_mae": 1.947, "used_live": "model" },
+      { "market": "assists", "label": "Assists", "model_mae": 1.343, "naive_mae": 1.358, "used_live": "model" },
+      { "market": "fg3m", "label": "3-pointers made", "model_mae": 0.889, "naive_mae": 0.887, "used_live": "naive" }
+    ]
+  },
+  "calibration": {
+    "source": "Synthetic-line calibration backtest (backend/backtest/synthetic_line_calibration.py): each held-out game gets a line from the player's own last-10 average rounded to .5. Isotonic fit for season N uses only earlier seasons. Error = mean |predicted − actual hit rate| across deciles.",
+    "rows": [
+      { "market": "points", "label": "Points", "chart": "calibration_points.png", "error_before": 0.0729, "error_after": 0.0201 },
+      { "market": "rebounds", "label": "Rebounds", "chart": "calibration_rebounds.png", "error_before": 0.0211, "error_after": 0.0077 },
+      { "market": "assists", "label": "Assists", "chart": "calibration_assists.png", "error_before": 0.0351, "error_after": 0.0116 },
+      { "market": "fg3m", "label": "3-pointers made", "chart": "calibration_fg3m.png", "error_before": null, "error_after": null }
+    ]
+  },
+  "live_markets": ["points"]
+}

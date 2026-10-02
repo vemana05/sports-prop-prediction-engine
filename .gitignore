@@ -30,3 +30,6 @@ out/
 # os
 .DS_Store
 .claude/
+
+# bet tracker (local, per-user)
+data/bets.sqlite

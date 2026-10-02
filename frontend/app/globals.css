@@ -1,0 +1,55 @@
+@import "../styles/tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply bg-surface text-ink antialiased;
+  }
+  body {
+    @apply font-sans text-base;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+@layer utilities {
+  .num {
+    font-variant-numeric: tabular-nums;
+    @apply font-display;
+  }
+}
+
+/* Bet slip perforation: a row of punched holes across the ticket, the
+   holes cut in --surface so the slip reads as a physical ticket. */
+.perforation {
+  height: 14px;
+  background:
+    radial-gradient(circle at 7px 7px, var(--surface) 4px, transparent 4.5px) -1px 0 / 14px 14px repeat-x;
+  position: relative;
+}
+.perforation::after {
+  content: "";
+  position: absolute;
+  inset: 6px 14px auto 14px;
+  border-top: 1.5px dashed var(--border);
+}
+/* Torn bottom edge of the slip */
+.tear-edge {
+  height: 10px;
+  background:
+    linear-gradient(-45deg, transparent 6px, var(--panel) 0) 0 0 / 12px 10px repeat-x,
+    linear-gradient(45deg, transparent 6px, var(--panel) 0) 0 0 / 12px 10px repeat-x;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
