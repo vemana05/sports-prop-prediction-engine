@@ -33,3 +33,5 @@ out/
 
 # bet tracker (local, per-user)
 data/bets.sqlite
+# schedule projections cache (recomputed daily)
+data/projections/

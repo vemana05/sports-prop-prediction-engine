@@ -82,6 +82,17 @@ export function Builder() {
   const tiers = useTiers();
   const slate = useSlate(league);
   const parlaysQuery = useParlays(league, tier, bankroll, filters);
+
+  // `?game=<id>` (from the Schedule page's "Lines posted" button): show only that game.
+  const [gameParamApplied, setGameParamApplied] = useState(false);
+  useEffect(() => {
+    if (gameParamApplied || slate.data?.status !== "ready") return;
+    setGameParamApplied(true);
+    const only = new URLSearchParams(window.location.search).get("game");
+    const games = slate.data.games ?? [];
+    if (only && games.some((g) => g.game_id === only)) setExcludedGames(games.map((g) => g.game_id).filter((id) => id !== only));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slate.data]);
   const legsQuery = useLegs(league, filters, mode === "manual");
   const data = parlaysQuery.data;
   const loading = !data || data.status === "warming" || data.status === "idle";

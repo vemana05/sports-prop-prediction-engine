@@ -137,3 +137,57 @@ export interface GameInfo {
   teams: string[];
   tip_utc: string | null;
 }
+
+export interface Projection {
+  mean: number;
+  lo: number;
+  hi: number;
+}
+
+export type StatKey = "minutes" | "points" | "rebounds" | "assists" | "fg3m";
+
+export interface ProjectedPlayer {
+  player_id: string;
+  player_name: string;
+  last_game_date: string;
+  opp_def_vs_position_pts: number | null;
+  projections: Record<StatKey, Projection>;
+}
+
+export interface TeamRest {
+  rest_days: number | null;
+  back_to_back: boolean;
+  season_opener: boolean;
+}
+
+export interface TeamProjection {
+  team: string;
+  opponent: string;
+  opp_pace: number | null;
+  opp_pace_rank: number | null;
+  n_teams_ranked: number;
+  players: ProjectedPlayer[];
+}
+
+export interface ScheduledGame {
+  game_id: string;
+  tip_utc: string;
+  home: string;
+  away: string;
+  rest: { home: TeamRest; away: TeamRest };
+  teams: { home: TeamProjection; away: TeamProjection };
+  builder_game_id: string | null;
+  lines_posted: boolean;
+}
+
+export interface ScheduleDay {
+  status: "ready" | "unavailable";
+  message?: string;
+  today: string;
+  date: string;
+  computed_at: string;
+  form_as_of: string;
+  prev_game_day: string | null;
+  next_game_day: string | null;
+  games: ScheduledGame[];
+}

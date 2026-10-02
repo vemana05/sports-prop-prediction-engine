@@ -7,6 +7,7 @@ import type {
   Parlay,
   ParlaysResponse,
   Performance,
+  ScheduleDay,
   ReplaceResponse,
   Sides,
   SlateInfo,
@@ -106,3 +107,12 @@ export function useBetMutations() {
     remove: useMutation({ mutationFn: (id: number) => send<{ ok: true }>("DELETE", `/api/bets/${id}`), onSuccess: done }),
   };
 }
+
+export const useSchedule = (league: League, date: string | null) =>
+  useQuery({
+    queryKey: ["schedule", league, date],
+    queryFn: () => get<ScheduleDay>(`/api/schedule?league=${league}${date ? `&date=${date}` : ""}`),
+    placeholderData: keepPreviousData,
+    retry: 4, // 503 while a data job or slate build holds the warehouse
+    retryDelay: 2500,
+  });

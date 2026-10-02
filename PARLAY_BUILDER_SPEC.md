@@ -664,6 +664,13 @@ Shape & depth:
 **G. Settings**
 - Bankroll, Kelly fraction (advanced), tier thresholds (advanced), loss limits, theme, optional LLM features, API keys status (never display key values).
 
+**H. Schedule & projections** (`/schedule`, `backend/predict/schedule_projections.py`)
+- NBA: date picker (default: next game day) with day-by-day arrows and jumps to the previous/next game day. Lists every game in `nba_schedule` with tip time (ET), away/home, and each team's rest going in: days of rest, back-to-back, or season opener, from the schedule.
+- Each game expands to projected minutes, points, rebounds, assists and 3PM per player, with a 25th–75th percentile range from that market's distribution (Normal for points and minutes, Negative Binomial for counts; 3PM uses the naive last-10 mean, per `predictor_choice`). Context: opponent, opponent pace rank, points the opponent allows to the player's position, rest.
+- Inputs are `build_current_form` as of today. Teammates-out is shown as "unknown until injury reports post" and modeled as nobody out. Every projection is labeled **Tentative** with its compute time; results are cached per date in `data/projections/` and recomputed when the cache is from an earlier day. The daily job warms the next game day. The page notes that early-season star projections run low (Section 5.9).
+- Never calls The Odds API. If the game's lines are already in the Builder's slate (built from `odds_snapshots`), show "Lines posted — build parlays", which opens the Builder filtered to that game (`/?game=<id>`); otherwise "Lines not posted yet."
+- NFL: Phase 6 placeholder. When built, NFL uses a week picker from nflverse schedules instead of dates.
+
 ### 10.5 Motion
 - **One signature moment:** when a parlay is loaded into the slip, legs drop in one after another, then the totals "print" at the bottom of the ticket. ~600ms total.
 - Otherwise motion only responds to user actions (drawer open, tier switch cross-fade, toast on "Bet logged").

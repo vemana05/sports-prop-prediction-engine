@@ -38,6 +38,8 @@ if [ -n "$(docker compose ps -q --status running api)" ]; then
     trap 'docker compose start api >>"$LOG_FILE" 2>&1' EXIT
 fi
 
+echo "--- step 0: warming schedule projections (next game day) ---" | tee -a "$LOG_FILE"
+docker compose run --rm backend python -m backend.predict.schedule_projections 2>&1 | tee -a "$LOG_FILE"
 
 echo "--- step 1/2: logging predictions ---" | tee -a "$LOG_FILE"
 docker compose run --rm backend python -m backend.predict.log_predictions 2>&1 | tee -a "$LOG_FILE"

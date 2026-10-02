@@ -9,6 +9,7 @@ Phase 4 parlay search and Kelly sizing code.
     GET  /api/legs?sides=both&veto=...&exclude=...
     POST /api/parlay/replace     veto one leg, swap in the best leg that still fits
     POST /api/parlay/score       score a hand-picked leg set ("Build my own")
+    GET  /api/schedule?date=YYYY-MM-DD   games + tentative projections (default: next game day)
     GET  /api/performance        walk-forward + calibration summary from reports/
     GET  /api/reports/{file}     calibration charts
     GET/POST /api/bets, PATCH/DELETE /api/bets/{id}   bet tracker
@@ -20,7 +21,10 @@ NFL arrives in Phase 6; until then NFL requests return
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
 from pathlib import Path
+
+import duckdb
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
@@ -28,6 +32,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from backend.api import tracker
+from backend.predict import schedule_projections
 from backend.bankroll.kelly import recommend_stake
 from backend.parlay.monte_carlo import Leg
 from backend.parlay.search import ParlayCandidate, SearchReport, find_replacement, in_tier_range, leg_id, score_parlay
@@ -42,6 +47,7 @@ REPORTS_DIR = Path("reports")
 
 MARKET_ABBR = {"points": "pts", "rebounds": "reb", "assists": "ast", "fg3m": "3PM"}
 NFL_UNAVAILABLE = "NFL models arrive in Phase 6. Switch to NBA to build parlays."
+NFL_SCHEDULE_UNAVAILABLE = "NFL schedule and projections arrive in Phase 6, with a week picker built on nflverse schedules."
 
 
 @app.on_event("startup")
@@ -297,6 +303,50 @@ def score(req: ScoreRequest) -> dict:
     tier_cfg = load_tiers()[req.tier]
     c = score_parlay(chosen, tier_cfg, SLATE.corr, REFERENCE_BANKROLL, seed=SEARCH_SEED)
     return {"parlay": _parlay_json(c, req.bankroll, tier_cfg, "Your parlay")}
+
+
+def _slate_game_for(home: str | None, away: str | None, tip_utc: str) -> str | None:
+    """The Builder's game key for a scheduled game, if its lines are in the
+    current slate. Odds events aren't always resolved to an nba game_id, so
+    match on the teams of the slate's legs plus the same tip date."""
+    if SLATE.status != "ready":
+        return None
+    day = tip_utc[:10]
+    teams = {t for t in (home, away) if t}
+    for gid, game in SLATE.games.items():
+        leg_teams = {l.team for l in SLATE.legs if l.game_id == gid and l.team}
+        same_day = game.tip_utc is None or game.tip_utc.isoformat()[:10] == day
+        if leg_teams and leg_teams <= teams and same_day:
+            return gid
+    return None
+
+
+@app.get("/api/schedule")
+def schedule(league: League = "nba", date_: str | None = Query(None, alias="date")) -> dict:
+    """Never calls The Odds API: "lines posted" only reflects odds already
+    collected into the slate."""
+    if league == "nfl":
+        return {"status": "unavailable", "message": NFL_SCHEDULE_UNAVAILABLE}
+    try:
+        if date_:
+            try:
+                day = date.fromisoformat(date_)
+            except ValueError:
+                raise HTTPException(422, "date must be YYYY-MM-DD")
+        else:
+            conn = schedule_projections._connect()
+            try:
+                day = schedule_projections.next_game_day(conn) or schedule_projections.today_et()
+            finally:
+                conn.close()
+        data = schedule_projections.get(day)
+        with_lines = schedule_projections.games_with_lines([g["game_id"] for g in data["games"]])
+    except duckdb.IOException:
+        raise HTTPException(503, "The warehouse is busy (a data job or slate build is running). Try again in a few seconds.")
+    for g in data["games"]:
+        g["builder_game_id"] = _slate_game_for(g["home"], g["away"], g["tip_utc"])
+        g["lines_posted"] = g["game_id"] in with_lines or g["builder_game_id"] is not None
+    return {"status": "ready", "today": schedule_projections.today_et().isoformat(), **data}
 
 
 @app.get("/api/performance")
