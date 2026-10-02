@@ -130,6 +130,86 @@ export interface Performance {
     source: string;
     rows: { market: string; label: string; chart: string; chart_url: string | null; error_before: number | null; error_after: number | null }[];
   };
+  nfl: NflPerformance | null;
+}
+
+export interface NflPerformanceRow {
+  market: NflMarket;
+  label: string;
+  n: number;
+  model_mae: number;
+  last5_mae: number;
+  season_mae: number;
+  shrunk_mae: number;
+  no_history: { n: number; model_mae: number; position_prior_mae: number } | null;
+  error_before: number;
+  error_after: number;
+  chart_url: string | null;
+}
+
+export interface NflPerformance {
+  test_seasons: number[];
+  rows: NflPerformanceRow[];
+}
+
+export type NflMarket = "passing_yards" | "rushing_yards" | "receiving_yards" | "receptions";
+
+export interface NflProjection {
+  mean: number;
+  lo: number;
+  hi: number;
+  actual: number | null;
+}
+
+export interface NflPlayer {
+  player_id: string;
+  player_name: string;
+  position: "QB" | "RB" | "WR" | "TE";
+  depth_rank: number | null;
+  questionable: boolean;
+  projections: Partial<Record<NflMarket, NflProjection>>;
+}
+
+export interface NflTeam {
+  team: string;
+  opponent: string;
+  players: NflPlayer[];
+}
+
+export interface NflGame {
+  game_id: string;
+  kickoff_utc: string | null;
+  home: string;
+  away: string;
+  final: boolean;
+  home_score: number | null;
+  away_score: number | null;
+  stadium: string | null;
+  roof: string | null;
+  indoor: boolean;
+  weather: { temperature_c: number; wind_kph: number; precip_mm: number; source: string } | null;
+  rest: { home: number | null; away: number | null };
+  teams: { away: NflTeam; home: NflTeam };
+}
+
+export interface NflWeekInfo {
+  week: number;
+  label: string;
+  first_kickoff_utc: string | null;
+  last_kickoff_utc: string | null;
+  n_games: number;
+  n_final: number;
+}
+
+export interface NflWeek {
+  status: "ready";
+  season: number;
+  week: number | null;
+  weeks: NflWeekInfo[];
+  computed_at: string;
+  models_trained_through: number;
+  injuries_posted: boolean;
+  games: NflGame[];
 }
 
 export interface GameInfo {

@@ -144,7 +144,7 @@ def _save_chart(raw: pd.DataFrame, calibrated: pd.DataFrame, market_name: str, c
 
     ax.set_xlabel("Predicted P(over synthetic line)")
     ax.set_ylabel("Actual hit rate")
-    ax.set_title(f"{market_name.title()} — synthetic-line calibration, before vs. after")
+    ax.set_title(f"{market_name[:1].upper() + market_name[1:]} — synthetic-line calibration, before vs. after")
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.legend()

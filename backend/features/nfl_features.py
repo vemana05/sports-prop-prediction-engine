@@ -31,6 +31,7 @@ in a season that is only ever trained on, never tested.
 from __future__ import annotations
 
 import duckdb
+import pandas as pd
 
 from backend.nfl_db import get_nfl_connection
 
@@ -51,7 +52,19 @@ def _roll(stat: str, n: int, alias: str) -> str:
     )
 
 
-def build_features(conn: duckdb.DuckDBPyConnection) -> int:
+def build_features(conn: duckdb.DuckDBPyConnection, pending: pd.DataFrame | None = None) -> int:
+    """Rebuilds nfl_features. `pending` (player_id, game_id, team, position,
+    player_name) adds rows for games not played yet, for live projections
+    (backend/predict/nfl_projections.py). Their stats are 0 placeholders,
+    but every feature on a row reads only strictly earlier games, so a
+    pending row's features are exactly what they'd be at kickoff given
+    what's published now. Pending rows come last in time, so they never
+    feed into any other row's features. Pass `pending` only on a scratch
+    connection, never on the warehouse (see nfl_projections.py).
+    """
+    if pending is None:
+        pending = pd.DataFrame({c: pd.Series(dtype="object") for c in ["player_id", "game_id", "team", "position", "player_name"]})
+    conn.register("_pending", pending)
     roll_cols = []
     for s in ROLL_STATS:
         roll_cols.append(_roll(s, 3, f"{s}_roll3"))
@@ -86,19 +99,21 @@ def build_features(conn: duckdb.DuckDBPyConnection) -> int:
     conn.execute(f"""
     CREATE OR REPLACE TEMP TABLE _base AS
     WITH keys AS (
-        SELECT player_id, game_id FROM nfl_player_weekly
+        SELECT player_id, game_id, NULL AS team, NULL AS position, NULL AS name FROM nfl_player_weekly
         UNION
-        SELECT player_id, game_id FROM nfl_snap_counts WHERE player_id IS NOT NULL AND offense_snaps > 0
+        SELECT player_id, game_id, NULL, NULL, NULL FROM nfl_snap_counts WHERE player_id IS NOT NULL AND offense_snaps > 0
+        UNION
+        SELECT player_id, game_id, team, position, player_name FROM _pending
     ),
     sc AS (SELECT player_id, game_id, max(offense_pct) AS snap_pct, any_value(team) AS team, any_value(position) AS position
            FROM nfl_snap_counts WHERE player_id IS NOT NULL GROUP BY ALL)
     SELECT k.player_id, k.game_id, s.season, s.week, s.game_type, s.kickoff_utc,
-           COALESCE(w.team, sc.team) AS team,
-           COALESCE(w.position, sc.position) AS position,
-           any_value(w.player_name) OVER (PARTITION BY k.player_id) AS player_name,
-           CASE WHEN COALESCE(w.team, sc.team) = s.home_team THEN s.away_team ELSE s.home_team END AS opponent,
-           (COALESCE(w.team, sc.team) = s.home_team)::INT AS home_flag,
-           CASE WHEN COALESCE(w.team, sc.team) = s.home_team THEN s.home_rest ELSE s.away_rest END AS rest_days,
+           COALESCE(w.team, sc.team, k.team) AS team,
+           COALESCE(w.position, sc.position, k.position) AS position,
+           COALESCE(any_value(w.player_name) OVER (PARTITION BY k.player_id), k.name) AS player_name,
+           CASE WHEN COALESCE(w.team, sc.team, k.team) = s.home_team THEN s.away_team ELSE s.home_team END AS opponent,
+           (COALESCE(w.team, sc.team, k.team) = s.home_team)::INT AS home_flag,
+           CASE WHEN COALESCE(w.team, sc.team, k.team) = s.home_team THEN s.home_rest ELSE s.away_rest END AS rest_days,
            s.div_game::INT AS div_game, (s.game_type <> 'REG')::INT AS playoff_flag,
            (s.roof NOT IN ('outdoors', 'open'))::INT AS indoor_flag,
            (s.surface ILIKE '%grass%')::INT AS grass_flag,
@@ -110,7 +125,7 @@ def build_features(conn: duckdb.DuckDBPyConnection) -> int:
     LEFT JOIN nfl_player_weekly w ON w.player_id = k.player_id AND w.game_id = k.game_id
     LEFT JOIN sc ON sc.player_id = k.player_id AND sc.game_id = k.game_id
     LEFT JOIN nfl_weather wx ON wx.game_id = k.game_id
-    WHERE COALESCE(w.position, sc.position) IN ('QB', 'RB', 'WR', 'TE');
+    WHERE COALESCE(w.position, sc.position, k.position) IN ('QB', 'RB', 'WR', 'TE');
 
     -- Team totals per game (carry share isn't in nflverse's weekly file).
     CREATE OR REPLACE TEMP TABLE _team_game AS

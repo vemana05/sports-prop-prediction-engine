@@ -10,12 +10,14 @@ Phase 4 parlay search and Kelly sizing code.
     POST /api/parlay/replace     veto one leg, swap in the best leg that still fits
     POST /api/parlay/score       score a hand-picked leg set ("Build my own")
     GET  /api/schedule?date=YYYY-MM-DD   games + tentative projections (default: next game day)
+    GET  /api/schedule?league=nfl&week=N NFL week + tentative projections (default: current week)
     GET  /api/performance        walk-forward + calibration summary from reports/
     GET  /api/reports/{file}     calibration charts
     GET/POST /api/bets, PATCH/DELETE /api/bets/{id}   bet tracker
 
-NFL arrives in Phase 6; until then NFL requests return
-`status: "unavailable"` so the UI can show its empty state.
+NFL is projections-only: odds aren't collected for NFL (they'd share the
+NBA's 500-credit Odds API budget, spec 3.5), so the parlay routes return
+`status: "unavailable"` for NFL and the Schedule page carries the numbers.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from backend.api import tracker
-from backend.predict import schedule_projections
+from backend.predict import nfl_projections, schedule_projections
 from backend.bankroll.kelly import recommend_stake
 from backend.parlay.monte_carlo import Leg
 from backend.parlay.search import ParlayCandidate, SearchReport, find_replacement, in_tier_range, leg_id, score_parlay
@@ -46,8 +48,10 @@ Sides = Literal["both", "over", "under"]
 REPORTS_DIR = Path("reports")
 
 MARKET_ABBR = {"points": "pts", "rebounds": "reb", "assists": "ast", "fg3m": "3PM"}
-NFL_UNAVAILABLE = "NFL models arrive in Phase 6. Switch to NBA to build parlays."
-NFL_SCHEDULE_UNAVAILABLE = "NFL schedule and projections arrive in Phase 6, with a week picker built on nflverse schedules."
+NFL_UNAVAILABLE = (
+    "NFL is projections only: odds aren't enabled for NFL, so there are no lines to build parlays from. "
+    "See the week's projections on the Schedule page."
+)
 
 
 @app.on_event("startup")
@@ -322,11 +326,18 @@ def _slate_game_for(home: str | None, away: str | None, tip_utc: str) -> str | N
 
 
 @app.get("/api/schedule")
-def schedule(league: League = "nba", date_: str | None = Query(None, alias="date")) -> dict:
+def schedule(
+    league: League = "nba",
+    date_: str | None = Query(None, alias="date"),
+    week: int | None = Query(None, ge=1, le=23),
+) -> dict:
     """Never calls The Odds API: "lines posted" only reflects odds already
-    collected into the slate."""
+    collected into the slate (NBA). NFL is projections only."""
     if league == "nfl":
-        return {"status": "unavailable", "message": NFL_SCHEDULE_UNAVAILABLE}
+        try:
+            return {"status": "ready", **nfl_projections.get(week)}
+        except duckdb.IOException:
+            raise HTTPException(503, "The NFL warehouse is busy (a data job is running). Try again in a few seconds.")
     try:
         if date_:
             try:
@@ -357,7 +368,33 @@ def performance() -> dict:
     data = json.loads(path.read_text())
     for row in data["calibration"]["rows"]:
         row["chart_url"] = f"/api/reports/{row['chart']}" if (REPORTS_DIR / row["chart"]).exists() else None
+    data["nfl"] = _nfl_performance()
     return data
+
+
+def _nfl_performance() -> dict | None:
+    path = REPORTS_DIR / "nfl_model_performance.json"
+    if not path.exists():
+        return None
+    raw = json.loads(path.read_text())
+    rows = []
+    for name, m in raw["markets"].items():
+        b, c = m["baselines"], m["calibration"]
+        chart = Path(c["chart"]).name
+        rows.append({
+            "market": name,
+            "label": m["label"],
+            "n": b["n"],
+            "model_mae": b["model_mae"],
+            "last5_mae": b["last5_avg_mae"],
+            "season_mae": b["season_avg_mae"],
+            "shrunk_mae": b["shrunk_last5_mae"],
+            "no_history": b.get("no_history_rows"),
+            "error_before": c["raw_mean_abs_calibration_error"],
+            "error_after": c["calibrated_mean_abs_calibration_error"],
+            "chart_url": f"/api/reports/{chart}" if (REPORTS_DIR / chart).exists() else None,
+        })
+    return {"test_seasons": raw["test_seasons"], "rows": rows}
 
 
 @app.get("/api/reports/{name}")

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BankrollInput } from "./bankroll-input";
@@ -201,7 +202,7 @@ export function Builder() {
             <h2 className="mb-2 text-sm font-medium text-muted">Over / under</h2>
             <SideSelector value={sides} onChange={(s) => { setSides(s); setSelectedId(null); resetEdits(); }} />
           </section>
-          <Filters
+          {league === "nba" && <Filters
             games={slate.data?.games ?? []}
             excluded={excludedGames}
             onToggle={(id) => {
@@ -209,7 +210,7 @@ export function Builder() {
               setSelectedId(null);
               resetEdits();
             }}
-          />
+          />}
           <VetoList vetoes={vetoes} onUndo={undoVeto} onClear={() => { setVetoes([]); resetEdits(); }} />
         </aside>
 
@@ -250,9 +251,14 @@ export function Builder() {
               <div className={cn("space-y-3 transition-opacity", parlaysQuery.isPlaceholderData && "opacity-60")}>
                 {data?.status === "unavailable" ? (
                   <EmptyState
-                    title="No NFL parlays yet"
-                    body={data.message ?? "NFL models aren't built yet."}
-                    action={<Button onClick={() => setLeague("nba")}>Switch to NBA</Button>}
+                    title="Projections only, odds not enabled"
+                    body={data.message ?? "NFL odds aren't collected, so there are no lines to build parlays from."}
+                    action={
+                      <div className="flex flex-wrap justify-center gap-2">
+                        <Button asChild variant="primary"><Link href="/schedule">See this week's NFL projections</Link></Button>
+                        <Button variant="outline" onClick={() => setLeague("nba")}>Switch to NBA</Button>
+                      </div>
+                    }
                   />
                 ) : data?.status === "error" ? (
                   <EmptyState
@@ -307,7 +313,7 @@ export function Builder() {
 function SlateSummary({ league, slate }: { league: League; slate?: SlateInfo }) {
   if (!slate || slate.status === "warming" || slate.status === "idle")
     return <Skeleton className="h-5 w-56" aria-label="Loading slate" />;
-  if (slate.status === "unavailable") return <span className="text-sm text-muted">NFL arrives in Phase 6</span>;
+  if (slate.status === "unavailable") return <span className="text-sm text-muted">NFL: projections only, odds not enabled</span>;
   if (slate.status === "error") return <span className="text-sm text-danger-ink">Slate failed to build</span>;
   if (!slate.n_games)
     return <span className="text-sm text-muted">No {league.toUpperCase()} games with odds yet</span>;

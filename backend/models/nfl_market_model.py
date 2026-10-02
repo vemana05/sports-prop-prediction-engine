@@ -98,7 +98,9 @@ MARKETS = [
 
 
 def load_frame(conn: duckdb.DuckDBPyConnection, market: Market) -> pd.DataFrame:
-    df = conn.execute(f"SELECT * FROM nfl_features WHERE {market.universe}").fetchdf()
+    # Fixed row order: LightGBM bagging samples by row index, so an unordered
+    # table rebuild would otherwise change results from run to run.
+    df = conn.execute(f"SELECT * FROM nfl_features WHERE {market.universe} ORDER BY kickoff_utc, game_id, player_id").fetchdf()
     df["pos_code"] = df["position"].map(POS_CODES)
     return df
 

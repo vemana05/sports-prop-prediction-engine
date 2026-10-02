@@ -8,6 +8,7 @@ import type {
   ParlaysResponse,
   Performance,
   ScheduleDay,
+  NflWeek,
   ReplaceResponse,
   Sides,
   SlateInfo,
@@ -107,6 +108,16 @@ export function useBetMutations() {
     remove: useMutation({ mutationFn: (id: number) => send<{ ok: true }>("DELETE", `/api/bets/${id}`), onSuccess: done }),
   };
 }
+
+export const useNflWeek = (week: number | null, enabled: boolean) =>
+  useQuery({
+    queryKey: ["nfl-week", week],
+    queryFn: () => get<NflWeek>(`/api/schedule?league=nfl${week ? `&week=${week}` : ""}`),
+    placeholderData: keepPreviousData,
+    enabled,
+    retry: 4, // 503 while an NFL data job holds the warehouse
+    retryDelay: 2500,
+  });
 
 export const useSchedule = (league: League, date: string | null) =>
   useQuery({

@@ -529,6 +529,14 @@ out-of-fold residuals. Results are in `reports/nfl_model_performance.json`, with
 
 **NFL odds collection stays off** (see 3.5: shared 500-credit budget). The UI shows projections only.
 
+**UI (projections only).** The Builder's NFL mode says "Projections only, odds not enabled" and builds no parlays.
+The Schedule page's NFL week picker (`backend/predict/nfl_projections.py`) lists each game with projected passing,
+rushing and receiving yards and receptions, plus 25th–75th percentile ranges, for depth-chart players. The
+projection models train on completed seasons only, so every current-season number is out-of-sample, and final
+games show the actual result next to the projection. Model performance has an NFL section with the baseline table
+and the note that most of the gain is shrinkage. Training reads rows in a fixed order: an unordered table rebuild
+had changed LightGBM's bagging and, with it, small results such as whether isotonic calibration helped.
+
 ---
 
 ## 6. Parlay probability (correlation)

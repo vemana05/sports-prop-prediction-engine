@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { LeagueToggle } from "@/components/league-toggle";
+import { NflWeekView } from "@/components/nfl-week";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSchedule } from "@/lib/api";
@@ -37,7 +38,7 @@ const ordinal = (n: number) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? "th" : ({
 export default function SchedulePage() {
   const [league, setLeague] = useState<League>("nba");
   const [date, setDate] = useState<string | null>(null); // null = server's default (next game day)
-  const { data, error, isFetching, isPlaceholderData } = useSchedule(league, league === "nba" ? date : null);
+  const { data, error, isFetching, isPlaceholderData } = useSchedule("nba", date); // NBA only; NFL has its own week view
 
   useEffect(() => {
     const fromDom = document.documentElement.dataset.league;
@@ -58,13 +59,7 @@ export default function SchedulePage() {
       </div>
 
       {league === "nfl" ? (
-        <div className="mt-6 rounded-control border border-dashed border-border bg-panel px-5 py-10 text-center">
-          <p className="font-display text-lg font-semibold">NFL arrives in Phase 6</p>
-          <p className="mx-auto mt-1 max-w-prose text-sm text-muted">
-            The NFL version will use a week picker built on nflverse schedules instead of a date picker.
-          </p>
-          <Button className="mt-4" onClick={() => setLeague("nba")}>Switch to NBA</Button>
-        </div>
+        <NflWeekView />
       ) : (
         <>
           <DateNav current={current} day={day} onChange={setDate} busy={isFetching} />
