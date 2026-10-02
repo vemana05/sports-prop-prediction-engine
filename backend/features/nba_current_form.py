@@ -11,6 +11,27 @@ window — see nba_features.py's schema). "games_played_prior_season" and the
 season-scoped averages are null/zero for the first game(s) of a new season,
 same as any other early-season row in nba_features — not a special case.
 
+Regression test's backstory: the season-scoped features above (
+`games_played_prior_season`, `*_roll_season`) used to be computed against
+the season of each player's own LAST PLAYED game, not the season of the
+game actually being predicted. That's the same thing everywhere except
+right at a season boundary: called before the new season's first games
+exist in `nba_player_games` (e.g. scoring opening night itself), every
+player's "last played game" is still last season's finale, so
+`games_played_prior_season` came out as last season's full game count and
+`pts_roll_season` as last season's full average — instead of the 0 /
+NULL that `nba_features.py` computes for that exact same row, point-in-time
+(its `wseason` window is season-partitioned and empty on a season's first
+game). A model trained on rows where those two features are always
+consistent with each other sees wildly out-of-distribution, self-
+contradictory inputs the one time it matters most: predicting a player's
+first game of a new season. `_season_as_of` below fixes this by asking
+`nba_schedule` what season the next scheduled game on/after `as_of`
+actually belongs to, instead of inferring it from historical data that
+doesn't yet contain a row for that season. See
+`backend/validate/test_nba_current_form.py`'s
+`test_season_opener_features_match_nba_features_point_in_time`.
+
 Real limitation: this has no roster source beyond "who recently played for
 this team" (nba_player_games), so a player who changed teams since their
 last recorded game (trade, free agency, waived) shows up under their OLD
@@ -33,6 +54,17 @@ _FULL_WINDOW_STATS = [("minutes", "min"), ("pts", "pts")]
 _ROLL10_ONLY_STATS = [("reb", "reb"), ("ast", "ast"), ("fg3m", "fg3m"), ("stl", "stl"), ("blk", "blk"), ("tov", "tov")]
 
 
+def _season_as_of(conn: duckdb.DuckDBPyConnection, as_of: date) -> str | None:
+    """The season of the next scheduled game on/after `as_of` — the season
+    an upcoming prediction actually belongs to, which can differ from the
+    season of a player's most recent PLAYED game (see module docstring).
+    None if `nba_schedule` has no row on/after `as_of` (not yet ingested
+    that far ahead) — callers fall back to the old, pre-season-boundary-
+    safe behavior in that case."""
+    row = conn.execute("SELECT season FROM nba_schedule WHERE game_date >= ? ORDER BY game_date LIMIT 1", [as_of]).fetchone()
+    return row[0] if row else None
+
+
 def _team_pace_by_team(games: pd.DataFrame) -> dict[str, float]:
     """Each team's box-score pace proxy (FGA - OREB + TOV + 0.44*FTA),
     rolled over its last 10 games played to date — same formula as
@@ -50,12 +82,19 @@ def _team_pace_by_team(games: pd.DataFrame) -> dict[str, float]:
 
 def _usage_rate_roll10_by_player(games: pd.DataFrame) -> dict[str, float]:
     """Standard box-score USG% formula, rolled over each player's own last
-    10 games — same formula as nba_features.py's usage_rate_roll10."""
+    10 GAMES (not the last 10 games where they happened to log minutes —
+    same window nba_features.py's usage_roll now uses, over ALL of
+    nba_player_games, not just rows that already have a usage_rate: a
+    0-minute game still occupies one of the "10 preceding" slots, it just
+    contributes no value — `.mean()` skips the NaN same as DuckDB's `AVG`
+    does). Rolling over only qualifying games here, while nba_features
+    rolls over the last 10 PHYSICAL games, drifted the two out of exact
+    agreement — caught by
+    backend/validate/test_nba_current_form.py's point-in-time test."""
     team_totals = games.groupby(["team", "game_id"], as_index=False).agg(
         team_fga=("fga", "sum"), team_fta=("fta", "sum"), team_tov=("tov", "sum"), team_minutes=("minutes", "sum")
     )
     merged = games.merge(team_totals, on=["team", "game_id"])
-    merged = merged[merged["minutes"] > 0]
     denom = merged["minutes"] * (merged["team_fga"] + 0.44 * merged["team_fta"] + merged["team_tov"])
     numer = (merged["fga"] + 0.44 * merged["fta"] + merged["tov"]) * (merged["team_minutes"] / 5.0)
     merged["usage_rate"] = 100.0 * numer / denom.replace(0, pd.NA)
@@ -127,6 +166,7 @@ def build_current_form(
     if games.empty:
         return pd.DataFrame()
 
+    schedule_season = _season_as_of(conn, as_of)
     team_pace = _team_pace_by_team(games)
     usage_roll10 = _usage_rate_roll10_by_player(games)
     position_by_player = _position_group_by_player(conn)
@@ -135,7 +175,7 @@ def build_current_form(
     rows = []
     for player_id, g in games.groupby("player_id_nba", sort=False):
         last = g.iloc[-1]
-        current_season = last["season"]
+        current_season = schedule_season or last["season"]
         season_games = g[g["season"] == current_season]
         # fetchdf() returns game_date as a pandas Timestamp, not a Python
         # date — normalize before subtracting from `as_of` (a plain date),
@@ -171,7 +211,20 @@ def build_current_form(
             row[f"{prefix}_roll10"] = g[stat_col].tail(10).mean()
         rows.append(row)
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    # Every numeric feature column defaults to Python `None` for a player
+    # with no qualifying games (e.g. every *_roll_season column on a
+    # season's first scored slate — see module docstring). `pd.DataFrame`
+    # infers a column's dtype from ALL its rows: if every row in a given
+    # batch happens to be None for one column (plausible for small batches,
+    # certain on a season opener), pandas gives it `object` dtype instead
+    # of `float64` with NaN — which LightGBM's `.predict()` then rejects
+    # outright ("pandas dtypes must be int, float or bool"). Casting
+    # explicitly avoids depending on what the rest of the batch looks like.
+    non_numeric = {"player_id_nba", "player_name", "team", "last_game_date", "is_back_to_back"}
+    numeric_cols = [c for c in df.columns if c not in non_numeric]
+    df[numeric_cols] = df[numeric_cols].astype("float64")
+    return df
 
 
 if __name__ == "__main__":

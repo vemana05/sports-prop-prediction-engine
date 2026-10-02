@@ -112,3 +112,41 @@ def test_negbinom_leg_ppf_and_hits_are_consistent():
     values = leg.ppf(u)
     assert (values >= 0).all(), "rebound counts can't be negative"
     assert np.all(np.diff(values) >= 0), "ppf should be non-decreasing in u"
+
+
+class _ConstantCalibrator:
+    """Stand-in for a fitted IsotonicRegression: maps every input to the
+    same fixed output, so a test can pin exactly what calibration should
+    do to p_hit()/p_over() without depending on sklearn or real data."""
+
+    def __init__(self, output: float):
+        self.output = output
+
+    def predict(self, raw):
+        return np.full(len(raw), self.output)
+
+
+def test_calibrator_overrides_the_raw_model_probability():
+    leg = _normal_leg("A", line=20.5, mean=22, sigma=5)  # raw p_over() would be well above 0.5
+    leg.calibrator = _ConstantCalibrator(0.3)
+    assert leg.raw_p_over() != pytest.approx(0.3)
+    assert leg.p_over() == pytest.approx(0.3)
+    assert leg.p_hit() == pytest.approx(0.3)  # side="over" by default
+
+
+def test_calibrator_also_shifts_the_monte_carlo_hit_test_not_just_p_hit():
+    # Calibrating a leg down to a near-certain miss (p_over=0.01) should
+    # make it (almost) never hit in the simulator too — not just in the
+    # scalar p_hit() figure — since spec Section 2 calibrates BEFORE
+    # simulation, not just before shrinkage. Checked via a >1-leg run (the
+    # single-leg path already returns leg.p_hit() exactly by construction —
+    # see test_single_leg_parlay_returns_the_legs_own_probability_exactly).
+    leg = _normal_leg("A", line=20.5, mean=22, sigma=5)
+    leg.calibrator = _ConstantCalibrator(0.01)
+    assert leg.p_hit() == pytest.approx(0.01)
+
+    sim = simulate_parlay_hit_probability(
+        [leg, _normal_leg("B", line=5, mean=14, sigma=4, side="under", game_id="g2", player_id="pB")],
+        _const_corr_matrices(0.0), n_simulations=20_000, seed=3,
+    )
+    assert sim["leg_p_hit"][0] == pytest.approx(0.01, abs=0.01)

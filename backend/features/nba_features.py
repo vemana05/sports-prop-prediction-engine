@@ -142,8 +142,21 @@ SELECT g.player_id_nba, g.game_id, g.game_date,
              / NULLIF(g.minutes * (t.team_fga + 0.44 * t.team_fta + t.team_tov), 0) AS usage_rate
 FROM nba_player_games g
 JOIN team_game_totals t ON t.team = g.team AND t.game_id = g.game_id
-WHERE g.minutes > 0
 """
+# Deliberately NOT `WHERE g.minutes > 0`: this needs a row for EVERY game
+# (NULLIF above already turns a 0-minute game's usage_rate into NULL
+# safely, with no division-by-zero), because usage_roll below windows
+# "ROWS 10 PRECEDING" over THIS table, joined back onto nba_player_games
+# by the same (player, game_id). Filtering a 0-minute game out here used
+# to drop it from that join entirely, so usage_rate_roll10 for THAT row
+# came out NULL regardless of the player's real usage history — purely
+# because the row describing the player's OWN current (not yet known)
+# game happened to be a 0-minute appearance, not because the history was
+# actually missing. Caught by
+# backend/validate/test_nba_current_form.py's point-in-time comparison
+# against build_current_form, which (correctly) has no way to know a
+# not-yet-played game's minutes in advance and always rolls over real
+# history.
 
 _USAGE_ROLL_SQL = """
 CREATE OR REPLACE TEMP TABLE usage_roll AS

@@ -1,7 +1,8 @@
 """Builds today's leg pool: for every real odds line in `odds_snapshots`,
-resolve the player, compute a fresh model prediction (Section 8's
-`MODEL_SHRINK_TO_MARKET` already applied), and produce both the "over" and
-"under" `Leg` for the Monte Carlo simulator and beam search to work with.
+resolve the player, compute a fresh model prediction, attach this market's
+isotonic calibrator (spec Section 2's pipeline — calibration happens here,
+before the `Leg` ever reaches shrinkage or the Monte Carlo simulator), and
+produce both the "over" and "under" `Leg`.
 
 Deliberately does NOT read or write `model_predictions_log` — that table's
 whole point is "log a prediction once, near game day, and never let it
@@ -31,6 +32,7 @@ from rapidfuzz import fuzz, process
 from backend.db import get_connection
 from backend.features.nba_current_form import build_current_form
 from backend.ingest.util import logger
+from backend.models.calibration import get_or_fit_calibrator
 from backend.models.model_cache import get_or_train_booster
 from backend.models.nba_minutes_model import FEATURE_COLUMNS
 from backend.models.nba_points_model import train_final_model as train_points_final
@@ -138,6 +140,7 @@ def build_leg_pool(conn: duckdb.DuckDBPyConnection | None = None) -> list[Leg]:
             opponent_by_team.update(_opponent_by_team(conn, game_date))
 
         preds = _points_predictions(conn, odds["player_id_nba"].unique().tolist(), opponent_by_team)
+        points_calibrator = get_or_fit_calibrator(conn, "points")
 
         current_form = build_current_form(conn, opponent_by_team=opponent_by_team)
         team_by_player = dict(zip(current_form["player_id_nba"], current_form["team"]))
@@ -159,6 +162,7 @@ def build_leg_pool(conn: duckdb.DuckDBPyConnection | None = None) -> list[Leg]:
                 dispersion=sigma,
                 over_price=row.over_price,
                 under_price=row.under_price,
+                calibrator=points_calibrator,
             )
             if row.over_price:
                 legs.append(Leg(side="over", decimal_odds=row.over_price, **base))

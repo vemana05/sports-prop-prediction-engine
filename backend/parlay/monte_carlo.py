@@ -10,11 +10,21 @@ where every leg clears its line.
 Cross-game legs are independent (correlation 0) — the leg-to-leg
 correlation matrix is built from `correlations.py`'s three relationship
 matrices, with 0 for any pair whose legs are in different games.
+
+Isotonic calibration (spec Section 2's pipeline — "P(over line) ->
+Calibration (isotonic) -> correlation-aware Monte Carlo") is applied to
+each leg's raw model probability via its optional `calibrator`, BEFORE
+shrinkage (`shrunk_p_hit`) and BEFORE simulation: `p_hit`/`p_over` return
+the calibrated probability, and the simulation's own hit test is shifted
+to the calibrated threshold (`_calibrated_line`) rather than the raw line,
+so a leg's simulated marginal hit rate matches its calibrated probability
+too — not just the independent-assumption numbers shown alongside it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from scipy import stats
@@ -41,20 +51,33 @@ class Leg:
     decimal_odds: float  # this leg's own side's price (over_price if side="over", else under_price)
     over_price: float | None = None
     under_price: float | None = None
+    calibrator: Any | None = None  # fitted IsotonicRegression (backend.models.calibration), or None to skip calibration
 
     @property
     def distribution(self) -> str:
         return "normal" if self.market == "points" else "negbinom"
 
-    def p_over(self) -> float:
+    def raw_p_over(self) -> float:
+        """Uncalibrated model P(over line) — straight out of the
+        probability distribution, before isotonic calibration."""
         if self.distribution == "normal":
             return float(normal_p_over(np.array([self.predicted_mean]), np.array([self.dispersion]), np.array([self.line]))[0])
         return float(mm.p_over_nb(np.array([self.predicted_mean]), np.array([self.dispersion]), np.array([self.line]))[0])
 
+    def p_over(self) -> float:
+        """Calibrated P(over line) — the raw model probability passed
+        through this leg's isotonic calibrator, if one was supplied.
+        Falls back to the raw probability otherwise (e.g. in tests that
+        build a Leg directly without a calibrator)."""
+        raw = self.raw_p_over()
+        if self.calibrator is None:
+            return raw
+        return float(self.calibrator.predict([raw])[0])
+
     def p_hit(self) -> float:
-        """Raw model probability — NOT shrunk toward the market. Used for
-        the correlation-aware Monte Carlo draw, where the model's own
-        distribution shape is what matters."""
+        """Calibrated model probability — NOT shrunk toward the market.
+        Used for the correlation-aware Monte Carlo draw, where the model's
+        own (calibrated) probability is what matters."""
         p_over = self.p_over()
         return p_over if self.side == "over" else 1 - p_over
 
@@ -89,8 +112,23 @@ class Leg:
         p = self.dispersion / (self.dispersion + mu)
         return stats.nbinom.ppf(u, self.dispersion, p)
 
+    def _calibrated_line(self) -> float:
+        """The line this leg's own (uncalibrated) distribution would need
+        to produce the CALIBRATED P(over) as its raw probability — lets
+        the simulation keep drawing real simulated values from the model's
+        own distribution shape (`ppf`), while the hit test reflects the
+        calibrated probability instead of the raw one. A no-op (returns
+        `line` unchanged) when there's no calibrator."""
+        if self.calibrator is None:
+            return self.line
+        threshold = float(self.ppf(np.array([1 - self.p_over()]))[0])
+        if self.distribution == "negbinom":
+            threshold += 0.5  # keep the "line is always .5, never a push" convention (see p_over_nb)
+        return threshold
+
     def hits(self, simulated_value: np.ndarray) -> np.ndarray:
-        return simulated_value > self.line if self.side == "over" else simulated_value < self.line
+        line = self._calibrated_line()
+        return simulated_value > line if self.side == "over" else simulated_value < line
 
 
 def _relationship(leg_a: Leg, leg_b: Leg) -> str:

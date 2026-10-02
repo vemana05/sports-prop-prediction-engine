@@ -95,3 +95,27 @@ def test_search_tier_returns_nothing_when_no_legs_meet_min_prob():
     tier_config = {"legs_min": 1, "legs_max": 1, "min_leg_prob": 0.99, "target_parlay_prob_min": 0.0, "target_parlay_prob_max": 1.0, "max_stake_pct_bankroll": 0.02}
     results = search_tier([weak], "test", tier_config, _zero_corr_matrices(), bankroll=500, n_simulations=1000, seed=1)
     assert results == []
+
+
+def test_search_tier_flags_a_leg_that_wildly_disagrees_with_the_no_vig_price():
+    # _leg's over_price == under_price == decimal_odds => no_vig_p_hit() is
+    # always exactly 0.5; a line deep in the tail of the model's own
+    # distribution (mean 20, sigma 2, line 10.5) makes the model's own
+    # probability close to 1.0 — a >15-point divergence that, in the real
+    # Oct 20 slate, turned out to be a feature/data bug, not a real edge.
+    suspicious = _leg("p1", "points", 10.5, 20, 2, odds=1.9)
+    tier_config = {"legs_min": 1, "legs_max": 1, "min_leg_prob": 0.0, "target_parlay_prob_min": 0.0, "target_parlay_prob_max": 1.0, "max_stake_pct_bankroll": 0.02}
+    results = search_tier([suspicious], "test", tier_config, _zero_corr_matrices(), bankroll=500, n_simulations=1000, seed=1)
+    assert len(results) == 1
+    assert results[0].flagged is True
+    assert results[0].stake.stake == 0.0
+    assert "CHECK DATA" in results[0].stake.reason
+
+
+def test_search_tier_does_not_flag_a_leg_close_to_the_no_vig_price():
+    reasonable = _leg("p1", "points", 19.5, 20, 5, odds=1.9)
+    tier_config = {"legs_min": 1, "legs_max": 1, "min_leg_prob": 0.0, "target_parlay_prob_min": 0.0, "target_parlay_prob_max": 1.0, "max_stake_pct_bankroll": 0.02}
+    results = search_tier([reasonable], "test", tier_config, _zero_corr_matrices(), bankroll=500, n_simulations=1000, seed=1)
+    assert len(results) == 1
+    assert results[0].flagged is False
+    assert results[0].flag_reasons == []

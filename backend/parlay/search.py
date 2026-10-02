@@ -12,6 +12,14 @@
    reported probability, EV, and stake.
 4. Keep finalists whose simulated parlay probability falls in the tier's
    [target_parlay_prob_min, target_parlay_prob_max], ranked by true EV.
+
+Sanity guard: a model probability this far from the book's own no-vig
+price, or a parlay EV this large, is far more likely to be a feature/data
+bug than a real edge (the Oct 20 opening-night slate's investigation found
+exactly this — e.g. a training-serving skew in build_current_form that
+made every leg look like a lopsided "under") — `_sanity_flags` below
+catches both patterns and zeroes the stake with a "check data" reason
+instead of silently recommending it.
 """
 
 from __future__ import annotations
@@ -25,6 +33,9 @@ DEFAULT_BEAM_WIDTH = 200
 DEFAULT_FINALISTS_PER_SIZE = 15
 DEFAULT_RESULTS_PER_TIER = 5
 
+LEG_MODEL_VS_MARKET_DIVERGENCE_LIMIT = 0.15  # probability points
+PARLAY_EV_SANITY_LIMIT = 0.30  # per $1
+
 
 @dataclass
 class ParlayCandidate:
@@ -33,6 +44,12 @@ class ParlayCandidate:
     independent_p_hit: float  # what it'd be if legs were independent — shown so correlation's effect is visible
     combined_decimal_odds: float
     stake: StakeRecommendation
+    flagged: bool = False
+    flag_reasons: list[str] = None
+
+    def __post_init__(self):
+        if self.flag_reasons is None:
+            self.flag_reasons = []
 
 
 def _combined_decimal_odds(legs: list[Leg]) -> float:
@@ -97,6 +114,31 @@ def _beam_search_by_naive_ev(
     return unique
 
 
+def _sanity_flags(legs: list[Leg], stake: StakeRecommendation) -> list[str]:
+    """Reasons to distrust this parlay's numbers rather than recommend it:
+    any leg whose (calibrated) model probability and the book's own
+    no-vig probability disagree by more than
+    `LEG_MODEL_VS_MARKET_DIVERGENCE_LIMIT`, or a parlay EV above
+    `PARLAY_EV_SANITY_LIMIT` per $1. A real, exploitable edge this big
+    against a liquid market is possible but rare; a feature/data bug
+    upstream of the model is far more common — see this module's
+    docstring."""
+    reasons = []
+    for leg in legs:
+        no_vig = leg.no_vig_p_hit()
+        if no_vig is None:
+            continue
+        divergence = abs(leg.p_hit() - no_vig)
+        if divergence > LEG_MODEL_VS_MARKET_DIVERGENCE_LIMIT:
+            reasons.append(
+                f"{leg.player_name} {leg.market} {leg.side} {leg.line}: model {leg.p_hit():.2f} vs. "
+                f"no-vig {no_vig:.2f} ({divergence * 100:.0f} points apart)"
+            )
+    if stake.ev_per_dollar > PARLAY_EV_SANITY_LIMIT:
+        reasons.append(f"parlay EV {stake.ev_per_dollar:+.2f} per $1 is implausibly large")
+    return reasons
+
+
 def search_tier(
     all_legs: list[Leg],
     tier_name: str,
@@ -125,9 +167,25 @@ def search_tier(
             continue
         d = _combined_decimal_odds(legs)
         stake = recommend_stake(p_hit, d, bankroll, tier_config["max_stake_pct_bankroll"])
+
+        flag_reasons = _sanity_flags(legs, stake)
+        if flag_reasons:
+            stake = StakeRecommendation(
+                model_p=stake.model_p, decimal_odds=stake.decimal_odds, ev_per_dollar=stake.ev_per_dollar,
+                kelly_f_star=stake.kelly_f_star, stake=0.0, capped_by_tier=False,
+                reason="CHECK DATA (not recommended) — " + "; ".join(flag_reasons),
+            )
+
         candidates.append(
-            ParlayCandidate(legs=legs, p_hit=p_hit, independent_p_hit=sim["independent_p_hit"], combined_decimal_odds=d, stake=stake)
+            ParlayCandidate(
+                legs=legs, p_hit=p_hit, independent_p_hit=sim["independent_p_hit"], combined_decimal_odds=d,
+                stake=stake, flagged=bool(flag_reasons), flag_reasons=flag_reasons,
+            )
         )
 
-    candidates.sort(key=lambda c: c.stake.ev_per_dollar, reverse=True)
+    # Flagged candidates sort after every clean one, regardless of their
+    # (likely bogus) EV — they're only kept at all so a caller can see
+    # *why* something was suppressed, not to let a suspiciously huge EV
+    # win the ranking it's being flagged for.
+    candidates.sort(key=lambda c: (c.flagged, -c.stake.ev_per_dollar))
     return candidates[:n_results]
