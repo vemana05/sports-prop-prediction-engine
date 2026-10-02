@@ -32,6 +32,16 @@ doesn't yet contain a row for that season. See
 `backend/validate/test_nba_current_form.py`'s
 `test_season_opener_features_match_nba_features_point_in_time`.
 
+Prior-season (`prior_season_*`) and teammate-out (`teammates_out_*`)
+features mirror nba_features.py's exactly. "Prior season" is the season
+before the one being predicted (`_season_as_of`), not before the player's
+last played one — same season-boundary reasoning as above. Teammate-out
+needs to be told who is out (`out_players_by_team`): live, that's
+`teammates_out_from_injury_report` (latest official report before the
+slate's first tip-off); for point-in-time tests against nba_features,
+`teammates_out_from_availability`. With neither, every team gets 0 out —
+the same value nba_features stores for a game where nobody was listed Out.
+
 Real limitation: this has no roster source beyond "who recently played for
 this team" (nba_player_games), so a player who changed teams since their
 last recorded game (trade, free agency, waived) shows up under their OLD
@@ -52,6 +62,67 @@ from backend.db import get_connection
 # (stat column in nba_player_games, feature-name prefix, windows needed)
 _FULL_WINDOW_STATS = [("minutes", "min"), ("pts", "pts")]
 _ROLL10_ONLY_STATS = [("reb", "reb"), ("ast", "ast"), ("fg3m", "fg3m"), ("stl", "stl"), ("blk", "blk"), ("tov", "tov")]
+
+
+def _prior_season(season: str) -> str:
+    start = int(season[:4]) - 1
+    return f"{start}-{(start + 1) % 100:02d}"
+
+
+def teammates_out_from_availability(conn: duckdb.DuckDBPyConnection, game_date: date) -> dict[str, list[str]]:
+    """{team_abbr: [player_id_nba, ...]} listed Out pre-tip for games on
+    `game_date`, from nba_player_availability — the exact set
+    nba_features.py's teammates_out_* columns are built from. For
+    historical/point-in-time comparisons only (it needs the box score)."""
+    rows = conn.execute(
+        """
+        SELECT DISTINCT t.team, a.player_id_nba
+        FROM nba_player_availability a
+        JOIN nba_schedule s ON s.game_id = a.game_id
+        JOIN (SELECT DISTINCT b.game_id, b.team_id, g.team
+              FROM nba_box_status b
+              JOIN nba_player_games g ON g.game_id = b.game_id AND g.player_id_nba = b.player_id_nba) t
+          ON t.game_id = a.game_id AND t.team_id = a.team_id
+        WHERE s.game_date = ? AND a.status = 'dnp_listed_injury_report'
+          AND a.detail LIKE 'Out%' AND a.detail NOT ILIKE '%G League%'
+        """,
+        [game_date],
+    ).fetchall()
+    out: dict[str, list[str]] = {}
+    for team, pid in rows:
+        out.setdefault(team, []).append(pid)
+    return out
+
+
+def teammates_out_from_injury_report(conn: duckdb.DuckDBPyConnection, game_date: date) -> dict[str, list[str]]:
+    """{team_abbr: [player_id_nba, ...]} listed Out (G League assignments
+    excluded) on the latest official injury report covering `game_date`
+    and published before that date's first tip-off — the live-serving
+    counterpart of `teammates_out_from_availability`. Empty if no report
+    for that date has been ingested yet."""
+    from nba_api.stats.static import teams as nba_static_teams
+
+    name_to_abbr = {t["full_name"]: t["abbreviation"] for t in nba_static_teams.get_teams()}
+    rows = conn.execute(
+        """
+        WITH first_tip AS (SELECT MIN(tip_utc) AS tip FROM nba_schedule WHERE game_date = ?),
+        latest AS (
+            SELECT MAX(i.report_time) AS rt FROM nba_injuries i, first_tip f
+            WHERE i.game_date = ? AND (i.report_time AT TIME ZONE 'America/New_York') < f.tip
+        )
+        SELECT DISTINCT i.team, i.player_id_nba
+        FROM nba_injuries i, latest l
+        WHERE i.game_date = ? AND i.report_time = l.rt AND i.player_id_nba IS NOT NULL
+          AND i.status = 'Out' AND COALESCE(i.reason, '') NOT ILIKE '%G League%'
+        """,
+        [game_date, game_date, game_date],
+    ).fetchall()
+    out: dict[str, list[str]] = {}
+    for team_name, pid in rows:
+        abbr = name_to_abbr.get(team_name)
+        if abbr:
+            out.setdefault(abbr, []).append(pid)
+    return out
 
 
 def _season_as_of(conn: duckdb.DuckDBPyConnection, as_of: date) -> str | None:
@@ -140,6 +211,7 @@ def build_current_form(
     conn: duckdb.DuckDBPyConnection,
     as_of: date | None = None,
     opponent_by_team: dict[str, str] | None = None,
+    out_players_by_team: dict[str, list[str]] | None = None,
 ) -> pd.DataFrame:
     """One row per player who has ever appeared in nba_player_games, with
     rolling-average features computed from their most recent games strictly
@@ -153,6 +225,7 @@ def build_current_form(
     natively, same as nba_features.py's own NULLs for unmatched positions)."""
     as_of = as_of or date.today()
     opponent_by_team = opponent_by_team or {}
+    out_players_by_team = out_players_by_team or {}
     games = conn.execute(
         """
         SELECT player_id_nba, player_name, team, opponent, season, game_date, game_id,
@@ -172,11 +245,20 @@ def build_current_form(
     position_by_player = _position_group_by_player(conn)
     def_vs_position = _def_vs_position_roll10(games, position_by_player)
 
+    # teammates_out_*: each out player's last-10 pts/minutes INCLUDING their
+    # most recent game (nba_features.py's player_form_l10 + ASOF join).
+    last10 = games.groupby("player_id_nba").tail(10).groupby("player_id_nba")[["pts", "minutes"]].mean()
+    teammates_out = {}
+    for team, out_ids in out_players_by_team.items():
+        known = last10.reindex([pid for pid in set(out_ids) if pid in last10.index])
+        teammates_out[team] = (len(set(out_ids)), float(known["pts"].sum()), float(known["minutes"].sum()))
+
     rows = []
     for player_id, g in games.groupby("player_id_nba", sort=False):
         last = g.iloc[-1]
         current_season = schedule_season or last["season"]
         season_games = g[g["season"] == current_season]
+        prior_games = g[g["season"] == _prior_season(current_season)]
         # fetchdf() returns game_date as a pandas Timestamp, not a Python
         # date — normalize before subtracting from `as_of` (a plain date),
         # or this raises TypeError (the same type-mismatch class of bug as
@@ -201,7 +283,14 @@ def build_current_form(
             "opp_def_vs_position_pts_roll10": (
                 def_vs_position.get((opponent, position_group)) if opponent and position_group else None
             ),
+            "prior_season_games": len(prior_games),
         }
+        for stat_col, prefix in [("minutes", "min"), ("pts", "pts"), ("reb", "reb"), ("ast", "ast"), ("fg3m", "fg3m")]:
+            row[f"prior_season_{prefix}_avg"] = prior_games[stat_col].mean() if len(prior_games) else None
+        n_out, out_pts, out_min = teammates_out.get(team, (0, 0.0, 0.0))
+        row["teammates_out_count"] = n_out
+        row["teammates_out_pts_l10"] = out_pts
+        row["teammates_out_min_l10"] = out_min
         for stat_col, prefix in _FULL_WINDOW_STATS:
             for w in (3, 5, 10):
                 row[f"{prefix}_roll{w}"] = g[stat_col].tail(w).mean()

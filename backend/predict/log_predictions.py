@@ -24,7 +24,7 @@ import pandas as pd
 from nba_api.stats.static import teams as nba_static_teams
 
 from backend.db import get_connection
-from backend.features.nba_current_form import build_current_form
+from backend.features.nba_current_form import build_current_form, teammates_out_from_injury_report
 from backend.ingest.util import IngestResult, logger, utcnow
 from backend.models import nba_market_model as mm
 from backend.models import nba_minutes_model, nba_points_model
@@ -32,7 +32,7 @@ from backend.models.model_cache import get_or_train_booster
 from backend.models.nba_minutes_model import FEATURE_COLUMNS
 
 LOOKAHEAD_HOURS = 48
-MODEL_VERSION = "phase2-v1"
+MODEL_VERSION = "phase2-v2"  # v2: + prior_season_* and teammates_out_* features
 MODEL_MAX_AGE_DAYS = 7  # "weekly retrain" per spec Section 5.5
 
 _MARKET_MODELS = [
@@ -92,7 +92,10 @@ def run(conn: duckdb.DuckDBPyConnection | None = None) -> IngestResult:
             logger.info("log_predictions: no games in the next %dh", LOOKAHEAD_HOURS)
             return IngestResult(rows_written=0, notes={"games": 0})
 
-        current_form = build_current_form(conn)
+        out_players_by_team: dict[str, list[str]] = {}
+        for game_date in pd.to_datetime(games["tip_utc"]).dt.tz_convert("America/New_York").dt.date.unique():
+            out_players_by_team.update(teammates_out_from_injury_report(conn, game_date))
+        current_form = build_current_form(conn, out_players_by_team=out_players_by_team)
         if current_form.empty:
             logger.warning("log_predictions: no current-form data available")
             return IngestResult(rows_written=0, notes={"error": "no current form"})

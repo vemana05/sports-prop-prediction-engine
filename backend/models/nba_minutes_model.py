@@ -38,6 +38,11 @@ FEATURE_COLUMNS = [
     "reb_roll10", "ast_roll10", "fg3m_roll10", "stl_roll10", "blk_roll10", "tov_roll10",
     "usage_rate_roll10", "team_pace_roll10", "opp_pace_roll10", "opp_def_vs_position_pts_roll10",
     "home_flag",
+] + [
+    "prior_season_games", "prior_season_min_avg", "prior_season_pts_avg",
+    "prior_season_reb_avg", "prior_season_ast_avg", "prior_season_fg3m_avg",
+] + [
+    "teammates_out_count", "teammates_out_pts_l10", "teammates_out_min_l10",
 ]
 TARGET_COLUMN = "minutes"
 

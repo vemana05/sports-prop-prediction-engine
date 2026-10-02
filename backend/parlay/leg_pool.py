@@ -30,7 +30,7 @@ from nba_api.stats.static import teams as nba_static_teams
 from rapidfuzz import fuzz, process
 
 from backend.db import get_connection
-from backend.features.nba_current_form import build_current_form
+from backend.features.nba_current_form import build_current_form, teammates_out_from_injury_report
 from backend.ingest.util import logger
 from backend.models.calibration import get_or_fit_calibrator
 from backend.models.model_cache import get_or_train_booster
@@ -85,11 +85,14 @@ def _resolve_player_names(conn: duckdb.DuckDBPyConnection, raw_names: list[str])
 
 
 def _points_predictions(
-    conn: duckdb.DuckDBPyConnection, player_ids: list[str], opponent_by_team: dict[str, str]
+    conn: duckdb.DuckDBPyConnection,
+    player_ids: list[str],
+    opponent_by_team: dict[str, str],
+    out_players_by_team: dict[str, list[str]],
 ) -> dict[str, tuple[float, float]]:
     """{player_id_nba: (predicted_mean, sigma)} for the points market,
     using whichever predictor won the walk-forward comparison."""
-    current_form = build_current_form(conn, opponent_by_team=opponent_by_team)
+    current_form = build_current_form(conn, opponent_by_team=opponent_by_team, out_players_by_team=out_players_by_team)
     current_form = current_form[current_form["player_id_nba"].isin(player_ids)]
     if current_form.empty:
         return {}
@@ -136,10 +139,14 @@ def build_leg_pool(conn: duckdb.DuckDBPyConnection | None = None) -> list[Leg]:
         odds = odds.dropna(subset=["player_id_nba"])
 
         opponent_by_team: dict[str, str] = {}
+        out_players_by_team: dict[str, list[str]] = {}
         for game_date in odds["commence_time"].dt.date.unique():
             opponent_by_team.update(_opponent_by_team(conn, game_date))
+            out_players_by_team.update(teammates_out_from_injury_report(conn, game_date))
 
-        preds = _points_predictions(conn, odds["player_id_nba"].unique().tolist(), opponent_by_team)
+        preds = _points_predictions(
+            conn, odds["player_id_nba"].unique().tolist(), opponent_by_team, out_players_by_team
+        )
         points_calibrator = get_or_fit_calibrator(conn, "points")
 
         current_form = build_current_form(conn, opponent_by_team=opponent_by_team)

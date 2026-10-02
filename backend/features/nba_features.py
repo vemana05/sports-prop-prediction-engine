@@ -32,9 +32,25 @@ features that don't depend on the nba_box_status availability backfill:
   average of points allowed to that position group, per game, over their
   last 10 games.
 
-None of the above touches `nba_box_status` / `nba_player_availability` —
-those are deliberately excluded until that backfill is complete (teammate-
-out features come after, as a separate pass).
+Prior-season features (`prior_season_*`): the player's full averages
+over the season immediately before this row's season (by season label, not
+"last N games") — complete before the current season starts, so trivially
+point-in-time. Gives the model a stable talent prior that the 3/5/10-game
+windows (which regress hard toward recent noise) and the season-to-date
+window (NULL on every opener) can't. NULL averages / 0 games for a player
+with no prior-season games (rookies, players who missed that whole year).
+
+Teammate-out features (`teammates_out_*`), from `nba_player_availability`:
+teammates on this team's box-score roster for this game who were listed
+**Out** on the injury report published before tip-off (G League / two-way
+assignments excluded — they're roster noise, not real absences). Each out
+teammate contributes their own last-10-games points and minutes as of their
+most recent game BEFORE this one (an ASOF join, so a long-term absence
+still carries that player's last known role). Point-in-time: the injury
+report is pre-tip by construction (see nba_availability.py); the
+"did not play" half of the availability status adds no real leakage for an
+"Out" listing. Serving-time equivalent: `nba_current_form`'s
+`teammates_out_from_injury_report` + `build_current_form(out_players_by_team=...)`.
 """
 
 from __future__ import annotations
@@ -83,6 +99,17 @@ CREATE TABLE IF NOT EXISTS {FEATURE_TABLE} (
     opp_pace_roll10                  DOUBLE,
     opp_def_vs_position_pts_roll10   DOUBLE,
 
+    prior_season_games      INTEGER,
+    prior_season_min_avg    DOUBLE,
+    prior_season_pts_avg    DOUBLE,
+    prior_season_reb_avg    DOUBLE,
+    prior_season_ast_avg    DOUBLE,
+    prior_season_fg3m_avg   DOUBLE,
+
+    teammates_out_count     INTEGER,
+    teammates_out_pts_l10   DOUBLE,
+    teammates_out_min_l10   DOUBLE,
+
     -- actuals, kept alongside features for training/eval convenience only —
     -- a model must never be handed these as inputs, just as labels
     minutes          DOUBLE,
@@ -107,6 +134,15 @@ ALTER TABLE {FEATURE_TABLE} ADD COLUMN IF NOT EXISTS usage_rate_roll10 DOUBLE;
 ALTER TABLE {FEATURE_TABLE} ADD COLUMN IF NOT EXISTS team_pace_roll10 DOUBLE;
 ALTER TABLE {FEATURE_TABLE} ADD COLUMN IF NOT EXISTS opp_pace_roll10 DOUBLE;
 ALTER TABLE {FEATURE_TABLE} ADD COLUMN IF NOT EXISTS opp_def_vs_position_pts_roll10 DOUBLE;
+ALTER TABLE {FEATURE_TABLE} ADD COLUMN IF NOT EXISTS prior_season_games INTEGER;
+ALTER TABLE {FEATURE_TABLE} ADD COLUMN IF NOT EXISTS prior_season_min_avg DOUBLE;
+ALTER TABLE {FEATURE_TABLE} ADD COLUMN IF NOT EXISTS prior_season_pts_avg DOUBLE;
+ALTER TABLE {FEATURE_TABLE} ADD COLUMN IF NOT EXISTS prior_season_reb_avg DOUBLE;
+ALTER TABLE {FEATURE_TABLE} ADD COLUMN IF NOT EXISTS prior_season_ast_avg DOUBLE;
+ALTER TABLE {FEATURE_TABLE} ADD COLUMN IF NOT EXISTS prior_season_fg3m_avg DOUBLE;
+ALTER TABLE {FEATURE_TABLE} ADD COLUMN IF NOT EXISTS teammates_out_count INTEGER;
+ALTER TABLE {FEATURE_TABLE} ADD COLUMN IF NOT EXISTS teammates_out_pts_l10 DOUBLE;
+ALTER TABLE {FEATURE_TABLE} ADD COLUMN IF NOT EXISTS teammates_out_min_l10 DOUBLE;
 """
 
 # Each CREATE OR REPLACE TEMP TABLE step is kept separate (rather than one
@@ -193,6 +229,63 @@ SELECT def_team, position_group, game_id,
 FROM position_vs_opponent_game
 """
 
+_PLAYER_SEASON_AVG_SQL = """
+CREATE OR REPLACE TEMP TABLE player_season_avg AS
+SELECT player_id_nba, CAST(LEFT(season, 4) AS INTEGER) AS season_start,
+       COUNT(*) AS games, AVG(minutes) AS min_avg, AVG(pts) AS pts_avg,
+       AVG(reb) AS reb_avg, AVG(ast) AS ast_avg, AVG(fg3m) AS fg3m_avg
+FROM nba_player_games
+GROUP BY player_id_nba, season
+"""
+
+# nba_box_status/nba_player_availability key teams by nba.com numeric id;
+# nba_player_games by abbreviation. Resolved per game from players who
+# appear in both, so no static id->abbr table can drift out of sync.
+_GAME_TEAM_ABBR_SQL = """
+CREATE OR REPLACE TEMP TABLE game_team_abbr AS
+SELECT DISTINCT b.game_id, b.team_id, g.team
+FROM nba_box_status b
+JOIN nba_player_games g ON g.game_id = b.game_id AND g.player_id_nba = b.player_id_nba
+"""
+
+# Last-10 averages INCLUDING each game — "what this player looked like
+# after their most recent game", which is what an absent teammate's
+# role is judged by (the ASOF join below picks the latest one strictly
+# before the game they're missing).
+_PLAYER_FORM_L10_SQL = """
+CREATE OR REPLACE TEMP TABLE player_form_l10 AS
+SELECT player_id_nba, game_date,
+       AVG(pts) OVER w AS pts_l10,
+       AVG(minutes) OVER w AS min_l10
+FROM nba_player_games
+WINDOW w AS (PARTITION BY player_id_nba ORDER BY game_date, game_id ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)
+"""
+
+_TEAMMATES_OUT_SQL = """
+CREATE OR REPLACE TEMP TABLE teammates_out AS
+WITH outs AS (
+    SELECT a.game_id, t.team, a.player_id_nba, s.game_date
+    FROM nba_player_availability a
+    JOIN game_team_abbr t ON t.game_id = a.game_id AND t.team_id = a.team_id
+    JOIN nba_schedule s ON s.game_id = a.game_id
+    WHERE a.status = 'dnp_listed_injury_report'
+      AND a.detail LIKE 'Out%'
+      AND a.detail NOT ILIKE '%G League%'
+)
+SELECT o.game_id, o.team, o.player_id_nba, f.pts_l10, f.min_l10
+FROM outs o
+ASOF LEFT JOIN player_form_l10 f
+       ON f.player_id_nba = o.player_id_nba AND o.game_date > f.game_date
+"""
+
+_TEAMMATES_OUT_AGG_SQL = """
+CREATE OR REPLACE TEMP TABLE teammates_out_agg AS
+SELECT game_id, team, COUNT(*) AS n_out,
+       COALESCE(SUM(pts_l10), 0) AS pts_l10, COALESCE(SUM(min_l10), 0) AS min_l10
+FROM teammates_out
+GROUP BY game_id, team
+"""
+
 _BUILD_SQL = f"""
 INSERT OR REPLACE INTO {FEATURE_TABLE}
     (player_id_nba, game_id, game_date, season, team, opponent, home_away,
@@ -201,6 +294,9 @@ INSERT OR REPLACE INTO {FEATURE_TABLE}
      pts_roll3, pts_roll5, pts_roll10, pts_roll_season, pts_std10,
      reb_roll10, ast_roll10, fg3m_roll10, stl_roll10, blk_roll10, tov_roll10,
      usage_rate_roll10, team_pace_roll10, opp_pace_roll10, opp_def_vs_position_pts_roll10,
+     prior_season_games, prior_season_min_avg, prior_season_pts_avg,
+     prior_season_reb_avg, prior_season_ast_avg, prior_season_fg3m_avg,
+     teammates_out_count, teammates_out_pts_l10, teammates_out_min_l10,
      minutes, pts, reb, ast, fg3m, stl, blk, tov, ingested_at)
 SELECT
     g.player_id_nba, g.game_id, g.game_date, g.season, g.team, g.opponent, g.home_away,
@@ -232,6 +328,17 @@ SELECT
     tp_opp.team_pace_roll10 AS opp_pace_roll10,
     dvp.opp_def_vs_position_pts_roll10,
 
+    CAST(COALESCE(ps.games, 0) AS INTEGER) AS prior_season_games,
+    ps.min_avg AS prior_season_min_avg,
+    ps.pts_avg AS prior_season_pts_avg,
+    ps.reb_avg AS prior_season_reb_avg,
+    ps.ast_avg AS prior_season_ast_avg,
+    ps.fg3m_avg AS prior_season_fg3m_avg,
+
+    CAST(COALESCE(tm.n_out, 0) AS INTEGER) AS teammates_out_count,
+    COALESCE(tm.pts_l10, 0) AS teammates_out_pts_l10,
+    COALESCE(tm.min_l10, 0) AS teammates_out_min_l10,
+
     g.minutes, g.pts, g.reb, g.ast, g.fg3m, g.stl, g.blk, g.tov,
     ? AS ingested_at
 FROM nba_player_games g
@@ -241,6 +348,9 @@ LEFT JOIN team_pace_roll tp_opp ON tp_opp.team = g.opponent AND tp_opp.game_id =
 LEFT JOIN player_position pp ON pp.player_id_nba = g.player_id_nba
 LEFT JOIN opp_def_vs_position_roll dvp
        ON dvp.def_team = g.opponent AND dvp.position_group = pp.position_group AND dvp.game_id = g.game_id
+LEFT JOIN player_season_avg ps
+       ON ps.player_id_nba = g.player_id_nba AND ps.season_start = CAST(LEFT(g.season, 4) AS INTEGER) - 1
+LEFT JOIN teammates_out_agg tm ON tm.game_id = g.game_id AND tm.team = g.team
 WINDOW
     wplayer AS (PARTITION BY g.player_id_nba ORDER BY g.game_date, g.game_id),
     w3      AS (PARTITION BY g.player_id_nba ORDER BY g.game_date, g.game_id ROWS BETWEEN 3  PRECEDING AND 1 PRECEDING),
@@ -260,6 +370,11 @@ def build(conn: duckdb.DuckDBPyConnection) -> IngestResult:
     conn.execute(_USAGE_ROLL_SQL)
     conn.execute(_TEAM_PACE_ROLL_SQL)
     conn.execute(_POSITION_VS_OPPONENT_ROLL_SQL)
+    conn.execute(_PLAYER_SEASON_AVG_SQL)
+    conn.execute(_GAME_TEAM_ABBR_SQL)
+    conn.execute(_PLAYER_FORM_L10_SQL)
+    conn.execute(_TEAMMATES_OUT_SQL)
+    conn.execute(_TEAMMATES_OUT_AGG_SQL)
 
     conn.execute(_BUILD_SQL, [utcnow()])
     n = conn.execute(f"SELECT COUNT(*) FROM {FEATURE_TABLE}").fetchone()[0]

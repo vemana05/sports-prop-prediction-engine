@@ -3,14 +3,15 @@ naive last-10-game rolling average — whichever actually won the
 walk-forward comparison (spec Section 5.7's naive-baseline reporting).
 
 Measured results (backend/models/*_model.py walk-forward MAE, all seasons
-pooled, after the usage/pace/opponent-defense features were added):
+pooled, after the prior-season and teammate-out features were added, on
+the 2026-10-02 full rebuild):
 
-    market     model    naive(last10)   winner
-    minutes    4.974    5.232 (roll3)   model
-    points     4.592    4.669 (season)  model
-    rebounds   1.920    1.947           model
-    assists    1.345    1.358           model
-    fg3m       0.890    0.887           naive  <- model does NOT win here
+    market     model    naive           winner
+    minutes    4.957    5.229 (roll3)   model
+    points     4.593    4.693 (last10)  model
+    rebounds   1.914    1.947 (last10)  model
+    assists    1.343    1.358 (last10)  model
+    fg3m       0.889    0.887 (last10)  naive  <- model still does NOT win here
 
 This is a static table, not re-derived at runtime, because re-deriving it
 means re-running a full walk-forward backtest (minutes of LightGBM

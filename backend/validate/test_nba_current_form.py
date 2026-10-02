@@ -12,7 +12,7 @@ from datetime import date, timedelta
 import pandas as pd
 import pytest
 
-from backend.features.nba_current_form import build_current_form
+from backend.features.nba_current_form import build_current_form, teammates_out_from_availability
 from backend.parlay.leg_pool import _opponent_by_team
 
 
@@ -46,12 +46,17 @@ _TEAM_INDEPENDENT_COLUMNS = [
     "min_roll3", "min_roll5", "min_roll10", "min_roll_season", "min_std10",
     "reb_roll10", "ast_roll10", "fg3m_roll10", "stl_roll10", "blk_roll10", "tov_roll10",
     "usage_rate_roll10", "games_played_prior_season",
+    "prior_season_games", "prior_season_min_avg", "prior_season_pts_avg",
+    "prior_season_reb_avg", "prior_season_ast_avg", "prior_season_fg3m_avg",
 ]
 # Depend on knowing the player's CURRENT team, which build_current_form can
 # only infer from nba_player_games (see the module docstring's documented
 # trade limitation) — only meaningful to compare when that inference landed
 # on the same team nba_features' real game row did.
-_TEAM_DEPENDENT_COLUMNS = ["team_pace_roll10", "opp_pace_roll10", "opp_def_vs_position_pts_roll10"]
+_TEAM_DEPENDENT_COLUMNS = [
+    "team_pace_roll10", "opp_pace_roll10", "opp_def_vs_position_pts_roll10",
+    "teammates_out_count", "teammates_out_pts_l10", "teammates_out_min_l10",
+]
 
 
 def test_season_opener_features_match_nba_features_point_in_time(conn):
@@ -99,7 +104,10 @@ def test_season_opener_features_match_nba_features_point_in_time(conn):
     assert not opener_rows.empty
 
     opponent_by_team = _opponent_by_team(conn, opener_date)
-    current_form = build_current_form(conn, as_of=opener_date, opponent_by_team=opponent_by_team)
+    current_form = build_current_form(
+        conn, as_of=opener_date, opponent_by_team=opponent_by_team,
+        out_players_by_team=teammates_out_from_availability(conn, opener_date),
+    )
     assert not current_form.empty
 
     merged = opener_rows.merge(current_form, on="player_id_nba", how="inner", suffixes=("_nf", "_cf"))

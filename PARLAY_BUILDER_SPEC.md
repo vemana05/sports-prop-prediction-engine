@@ -484,6 +484,22 @@ retrain" per Section 5.5) rather than from scratch on every daily run —
 the daily job now takes seconds for the model-loading step instead of the
 several minutes 5 fresh LightGBM trainings cost.
 
+### 5.9 Known issue: low opening-night predictions for stars (2026-10-02)
+
+On the Oct 20 slate (5 FanDuel points props), the model's calibrated
+P(over) was 14–25 points below the no-vig probability on every leg. Part of
+this comes from last-10 averages dragged down by injury-return and rest
+games at the end of last season (e.g. Cunningham: 17.1 last-10 vs. 23.9
+season, because of a 5-minute injury exit and three minutes-limited games
+after his return). There were no 0-minute rows, duplicates or ID mismatches.
+Training the pts/reb/ast/fg3m models on the residual from a 50/50
+prior-season/last-10 baseline was tried and reverted: walk-forward MAE got
+slightly worse in all four markets (pts 4.593 → 4.647) and the 30+ ppg
+bias grew (−0.88 → −1.31).
+
+**Future idea:** compute rolling averages from normal-minutes games only,
+and model points as points-per-minute × projected minutes.
+
 ---
 
 ## 6. Parlay probability (correlation)
