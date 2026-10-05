@@ -30,6 +30,9 @@ export default {
         danger: { DEFAULT: v("tier-danger"), ink: v("tier-danger-ink") },
         "edge-pos": v("edge-pos"),
         "edge-neg": v("edge-neg"),
+        "miss-in": v("miss-in"),
+        "miss-above": v("miss-above"),
+        "miss-below": v("miss-below"),
       },
       fontFamily: {
         sans: ["var(--font-barlow)", "system-ui", "sans-serif"],

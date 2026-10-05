@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
+import { ActualValue, MissLegend } from "@/components/actual-value";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useNflWeek } from "@/lib/api";
@@ -120,6 +121,7 @@ function Notes({ d }: { d: NflWeek }) {
           )}
         </li>
       </ul>
+      {d.games.some((g) => g.final) && <MissLegend className="mt-3 border-t border-border pt-3" />}
     </section>
   );
 }
@@ -228,15 +230,12 @@ function PlayerRow({ p, final }: { p: NflPlayer; final: boolean }) {
         const v = p.projections[m.key];
         if (!v) return <td key={m.key} className="px-2 py-1.5 text-right text-muted">—</td>;
         const digits = m.key === "receptions" ? 1 : 0;
-        const inRange = v.actual != null && v.actual >= v.lo && v.actual <= v.hi;
         return (
           <td key={m.key} className="px-2 py-1.5 text-right">
             <span className="num block text-base font-semibold leading-tight">{v.mean.toFixed(digits)}</span>
             <span className="num block text-xs text-muted">{v.lo.toFixed(0)}–{v.hi.toFixed(0)}</span>
             {final && v.actual != null && (
-              <span className={cn("num block text-xs", inRange ? "text-safe-ink" : "text-ink")} title={inRange ? "Landed inside the range" : "Landed outside the range"}>
-                actual {v.actual.toFixed(0)}
-              </span>
+              <ActualValue actual={v.actual} lo={v.lo} hi={v.hi} digits={0} prefix="actual " className="block text-xs" />
             )}
           </td>
         );

@@ -34,6 +34,12 @@
   --edge-pos: #23897c;
   --edge-neg: #8a94a6;
 
+  /* Actual vs. projected 25th-75th range (Schedule, Replay). Text colors,
+     all >= 4.5:1 on --panel and --surface. Direction of the miss, not good/bad. */
+  --miss-in: #8a6a00;    /* yellow (dark amber so it reads on white) 5.07:1 */
+  --miss-above: #1d7a35; /* green 5.40:1 */
+  --miss-below: #b42318; /* red 6.57:1 */
+
   --accent: var(--nba-accent);
   --accent-ink: var(--nba-accent-ink);
 
@@ -67,6 +73,10 @@
 
   --edge-pos: #3db3a3;
   --edge-neg: #6f7b8f;
+
+  --miss-in: #f2c94c;    /* 8.44:1 on panel */
+  --miss-above: #5fd47a; /* 7.13:1 */
+  --miss-below: #ff8a80; /* 5.86:1 */
 
   --slip-shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 16px 40px -8px rgb(0 0 0 / 0.55);
 

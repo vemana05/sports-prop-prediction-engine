@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ActualValue, MissLegend } from "@/components/actual-value";
 import { LeagueToggle } from "@/components/league-toggle";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -174,7 +175,7 @@ function BiggestMisses({ rows }: { rows: ReplayRow[] }) {
           <li key={`${p.player_name}-${p.team}`} className="rounded-control border border-border bg-panel px-3 py-2.5">
             <p className="truncate font-medium">{p.player_name}</p>
             <p className="num mt-0.5 text-sm text-muted">
-              Proj {fmt(p.predicted)} → <span className="font-semibold text-ink">{fmt(p.actual, 0)}</span>
+              Proj {fmt(p.predicted)} → <ActualValue actual={p.actual} lo={p.lo} hi={p.hi} />
             </p>
             <p className="num text-sm font-semibold">Miss {signed(p.miss)}</p>
           </li>
@@ -253,20 +254,6 @@ function Rolling({ r, weeks, onWeeks }: { r: Ready; weeks: number; onWeeks: (n: 
   );
 }
 
-function Legend() {
-  return (
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm text-muted" aria-label="Legend">
-      <span className="flex items-center gap-1.5">
-        <span className="num font-semibold text-safe-ink">12</span> Green actual: landed inside the 25th–75th range
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className="num font-semibold text-ink">12</span> White actual: landed outside it (dark text in light mode)
-      </span>
-      <span>Miss = actual − projection</span>
-    </div>
-  );
-}
-
 function PlayerTable({ r }: { r: Ready }) {
   const [q, setQ] = useState("");
   const rows = q ? r.rows.filter((p) => p.player_name.toLowerCase().includes(q.toLowerCase())) : r.rows;
@@ -283,7 +270,8 @@ function PlayerTable({ r }: { r: Ready }) {
           onChange={(e) => setQ(e.target.value)}
         />
       </div>
-      <div className="mt-2"><Legend /></div>
+      <MissLegend className="mt-2" />
+      <p className="mt-1 text-xs text-muted">Miss = actual − projection.</p>
       <div className="mt-3 overflow-x-auto rounded-control border border-border bg-panel">
         <table className="w-full min-w-[620px] text-left text-sm">
           <thead className="border-b border-border text-muted">
@@ -303,7 +291,7 @@ function PlayerTable({ r }: { r: Ready }) {
                 <td className="px-4 py-2 text-muted">{p.team}{p.opponent ? ` vs ${p.opponent}` : ""}</td>
                 <td className="num px-4 py-2 text-right">{fmt(p.predicted)}</td>
                 <td className="num px-4 py-2 text-right text-muted">{fmt(p.lo)}–{fmt(p.hi)}</td>
-                <td className={cn("num px-4 py-2 text-right font-semibold", p.inside ? "text-safe-ink" : "text-ink")}>{fmt(p.actual, 0)}</td>
+                <td className="px-4 py-2 text-right"><ActualValue actual={p.actual} lo={p.lo} hi={p.hi} /></td>
                 <td className="num px-4 py-2 text-right">{signed(p.miss)}</td>
               </tr>
             ))}
