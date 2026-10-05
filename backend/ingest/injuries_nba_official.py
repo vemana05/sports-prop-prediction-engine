@@ -40,6 +40,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import duckdb
 import pandas as pd
@@ -164,6 +165,41 @@ def run(conn: duckdb.DuckDBPyConnection | None = None) -> IngestResult:
             logger.warning("nbainjuries: no valid report found near %s", VALIDATION_TIMESTAMP)
             return IngestResult(rows_written=0, notes={"error": "no valid report found"})
         logger.info("nbainjuries: fetching report for %s", timestamp)
+        df = fetch_report(timestamp)
+        rows = _write(conn, df, timestamp)
+        logger.info("nbainjuries: wrote %d rows for report %s", rows, timestamp)
+        return IngestResult(rows_written=rows, notes={"report_time": timestamp.isoformat()})
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def _latest_valid_timestamp(now_eastern: datetime, max_hours_back: int = 12) -> datetime | None:
+    """Newest published report at or before `now_eastern` (naive ET).
+
+    Reports post on the half hour in-season, so step back 30 minutes at a
+    time. Capped at 12 hours: off-season days have no reports at all, and
+    the cap keeps that case to a couple dozen cheap validity checks.
+    """
+    candidate = now_eastern.replace(minute=30 if now_eastern.minute >= 30 else 0, second=0, microsecond=0)
+    for _ in range(max_hours_back * 2 + 1):
+        if retry(lambda: injury.check_reportvalid(candidate), what=f"check_reportvalid({candidate})"):
+            return candidate
+        candidate -= timedelta(minutes=30)
+    return None
+
+
+def run_latest(conn: duckdb.DuckDBPyConnection | None = None) -> IngestResult:
+    """Daily-job entrypoint: ingest the most recent report as of now.
+    No-ops with a warning when none has posted (off-season, no games)."""
+    own_conn = conn is None
+    conn = conn or get_connection()
+    try:
+        now_eastern = datetime.now(ZoneInfo("America/New_York")).replace(tzinfo=None)
+        timestamp = _latest_valid_timestamp(now_eastern)
+        if timestamp is None:
+            logger.warning("nbainjuries: no report posted in the 12 hours before %s", now_eastern)
+            return IngestResult(rows_written=0, notes={"error": "no recent report"})
         df = fetch_report(timestamp)
         rows = _write(conn, df, timestamp)
         logger.info("nbainjuries: wrote %d rows for report %s", rows, timestamp)
@@ -376,10 +412,14 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Official NBA injury report ingestion")
     parser.add_argument("--backfill-game-days", action="store_true", help="One pre-game snapshot per game day across all ingested seasons")
+    parser.add_argument("--latest", action="store_true", help="Ingest the most recent report as of now (daily job)")
     parser.add_argument("--fix-late-reports", action="store_true", help="Fetch an earlier report for games whose day-level snapshot is after tip-off")
     args = parser.parse_args()
 
-    if args.fix_late_reports:
+    if args.latest:
+        result = run_latest()
+        print(f"nbainjuries latest-report ingest complete: {result.rows_written} rows ({result.notes})")
+    elif args.fix_late_reports:
         result = fix_late_reports()
         print(f"nbainjuries late-report fix complete: {result.rows_written} rows ({result.notes})")
     elif args.backfill_game_days:

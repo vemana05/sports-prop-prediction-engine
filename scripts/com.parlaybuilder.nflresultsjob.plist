@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.parlaybuilder.nflresultsjob</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/vemana/Projects/BettingApp/scripts/weekly_nfl_job.sh</string>
+        <string>results</string>
+    </array>
+
+    <!-- Tuesdays 9:00 AM Eastern (this Mac's timezone): after Monday
+         Night Football, pulls finished games' results/stats/snaps and
+         rebuilds nfl_features. Weekday 2 is Tuesday. Runs `results` mode
+         of the same script as the Saturday job. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>2</integer>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/vemana/Projects/BettingApp/logs/launchd_nfl_results_stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/vemana/Projects/BettingApp/logs/launchd_nfl_results_stderr.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

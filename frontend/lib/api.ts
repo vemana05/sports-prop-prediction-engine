@@ -10,6 +10,7 @@ import type {
   ScheduleDay,
   NflWeek,
   ReplaceResponse,
+  Replay,
   Sides,
   SlateInfo,
   TierConfig,
@@ -125,5 +126,19 @@ export const useSchedule = (league: League, date: string | null) =>
     queryFn: () => get<ScheduleDay>(`/api/schedule?league=${league}${date ? `&date=${date}` : ""}`),
     placeholderData: keepPreviousData,
     retry: 4, // 503 while a data job or slate build holds the warehouse
+    retryDelay: 2500,
+  });
+
+export const useReplay = (league: League, market: string | null, period: string | null, weeks: number) =>
+  useQuery({
+    queryKey: ["replay", league, market, period, weeks],
+    queryFn: () => {
+      const q = new URLSearchParams({ league, weeks: String(weeks) });
+      if (market) q.set("market", market);
+      if (period) q.set("period", period);
+      return get<Replay>(`/api/replay?${q}`);
+    },
+    placeholderData: keepPreviousData,
+    retry: 4, // 503 while a data job holds a warehouse
     retryDelay: 2500,
   });

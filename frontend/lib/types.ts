@@ -271,3 +271,52 @@ export interface ScheduleDay {
   next_game_day: string | null;
   games: ScheduledGame[];
 }
+
+// ---- Replay (GET /api/replay) ----
+export interface ReplaySummary {
+  n: number;
+  model_mae: number;
+  naive_mae: number | null;
+  model_mae_same_rows: number | null;
+  n_naive: number;
+  coverage: number;
+  bias: number;
+}
+
+export interface ReplayRow {
+  player_name: string;
+  team: string | null;
+  opponent: string | null;
+  predicted: number;
+  lo: number;
+  hi: number;
+  actual: number;
+  miss: number;
+  inside: boolean;
+  naive: number | null;
+}
+
+export interface ReplayOption {
+  key: string;
+  label: string;
+}
+
+export type Replay =
+  | { status: "unavailable"; league: League; detail: string }
+  | {
+      status: "ready";
+      league: League;
+      period: ReplayOption;
+      periods: ReplayOption[];
+      market: ReplayOption;
+      markets: ReplayOption[];
+      summary: ReplaySummary | null;
+      biggest_misses: ReplayRow[];
+      rows: ReplayRow[];
+      rolling: (ReplaySummary & { label: string })[];
+      weeks: number;
+      source: string;
+      baseline_name: string;
+      naive_is_model: boolean;
+      note: string;
+    };

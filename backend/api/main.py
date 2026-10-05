@@ -11,6 +11,8 @@ Phase 4 parlay search and Kelly sizing code.
     POST /api/parlay/score       score a hand-picked leg set ("Build my own")
     GET  /api/schedule?date=YYYY-MM-DD   games + tentative projections (default: next game day)
     GET  /api/schedule?league=nfl&week=N NFL week + tentative projections (default: current week)
+    GET  /api/replay?league=nba&market=points&period=YYYY-MM-DD&weeks=8   out-of-sample replay of a past day
+    GET  /api/replay?league=nfl&market=receiving_yards&period=2026-4    ... or NFL week (season-week)
     GET  /api/performance        walk-forward + calibration summary from reports/
     GET  /api/reports/{file}     calibration charts
     GET/POST /api/bets, PATCH/DELETE /api/bets/{id}   bet tracker
@@ -33,7 +35,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from backend.api import tracker
+from backend.api import replay as replay_mod, tracker
 from backend.predict import nfl_projections, schedule_projections
 from backend.bankroll.kelly import recommend_stake
 from backend.parlay.monte_carlo import Leg
@@ -358,6 +360,24 @@ def schedule(
         g["builder_game_id"] = _slate_game_for(g["home"], g["away"], g["tip_utc"])
         g["lines_posted"] = g["game_id"] in with_lines or g["builder_game_id"] is not None
     return {"status": "ready", "today": schedule_projections.today_et().isoformat(), **data}
+
+
+@app.get("/api/replay")
+def replay(
+    league: League = "nba",
+    market: str | None = None,
+    period: str | None = None,
+    weeks: int = Query(8, ge=1, le=52),
+) -> dict:
+    """Out-of-sample projections vs. actual results. Never calls The Odds API."""
+    try:
+        return replay_mod.replay(league, market, period, weeks)
+    except replay_mod.NotBuilt as exc:
+        return {"status": "unavailable", "league": league, "detail": str(exc)}
+    except ValueError:
+        raise HTTPException(422, "period must be YYYY-MM-DD (NBA) or SEASON-WEEK (NFL)")
+    except duckdb.IOException:
+        raise HTTPException(503, "The warehouse is busy (a data job is running). Try again in a few seconds.")
 
 
 @app.get("/api/performance")

@@ -64,6 +64,9 @@ def _points_residuals() -> pd.DataFrame:
             "actual": df["pts"],
             "predicted": predicted,
             "predictor": predictor,
+            "naive": df["pts_roll10"],
+            "dist": "normal",
+            "dispersion": df["sigma"],
         }
     )
 
@@ -80,12 +83,27 @@ def _nb_market_residuals(conn: duckdb.DuckDBPyConnection, market: str, target_co
             "actual": df[target_col],
             "predicted": predicted,
             "predictor": predictor,
+            "naive": df[naive_col],
+            "dist": "nb",
+            "dispersion": df["dispersion_r"],
         }
     )
 
 
+# Added for the Replay page: the last-10 baseline, and the fold's own
+# distribution (Normal sigma for points, NB r otherwise) so a 25th-75th
+# range is drawn exactly as the live app draws it. Applied only on build,
+# so a table from before these columns existed stays readable as-is.
+_REPLAY_COLUMNS = f"""
+ALTER TABLE {RESIDUALS_TABLE} ADD COLUMN IF NOT EXISTS naive DOUBLE;
+ALTER TABLE {RESIDUALS_TABLE} ADD COLUMN IF NOT EXISTS dist VARCHAR;  -- "normal" | "nb"
+ALTER TABLE {RESIDUALS_TABLE} ADD COLUMN IF NOT EXISTS dispersion DOUBLE;
+"""
+
+
 def build(conn: duckdb.DuckDBPyConnection) -> IngestResult:
     conn.execute(_SCHEMA)
+    conn.execute(_REPLAY_COLUMNS)
     conn.execute(f"DELETE FROM {RESIDUALS_TABLE}")
 
     frames = [_points_residuals()]
@@ -106,8 +124,8 @@ def build(conn: duckdb.DuckDBPyConnection) -> IngestResult:
     conn.execute(
         f"""
         INSERT INTO {RESIDUALS_TABLE}
-            (player_id_nba, game_id, team, market, actual, predicted, residual, predictor, ingested_at)
-        SELECT player_id_nba, game_id, team, market, actual, predicted, residual, predictor, ingested_at
+            (player_id_nba, game_id, team, market, actual, predicted, residual, predictor, ingested_at, naive, dist, dispersion)
+        SELECT player_id_nba, game_id, team, market, actual, predicted, residual, predictor, ingested_at, naive, dist, dispersion
         FROM residuals_df
         """
     )

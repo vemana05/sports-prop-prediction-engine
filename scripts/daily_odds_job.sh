@@ -38,6 +38,15 @@ if [ -n "$(docker compose ps -q --status running api)" ]; then
     trap 'docker compose start api >>"$LOG_FILE" 2>&1' EXIT
 fi
 
+# Refresh availability before predicting: log_predictions reads the latest
+# injury report for teammates-out. Failures here are logged, not fatal — a
+# stale report shouldn't stop predictions or odds collection.
+echo "--- refresh: NBA injury report (latest) ---" | tee -a "$LOG_FILE"
+docker compose run --rm backend python -m backend.ingest.injuries_nba_official --latest 2>&1 | tee -a "$LOG_FILE"
+
+echo "--- refresh: Sleeper player status ---" | tee -a "$LOG_FILE"
+docker compose run --rm backend python -m backend.ingest.sleeper 2>&1 | tee -a "$LOG_FILE"
+
 echo "--- step 0: warming schedule projections (next game day) ---" | tee -a "$LOG_FILE"
 docker compose run --rm backend python -m backend.predict.schedule_projections 2>&1 | tee -a "$LOG_FILE"
 
