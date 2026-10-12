@@ -140,20 +140,25 @@ def nfl(market: str, season: int | None, week: int | None, weeks: int) -> dict:
             raise NotBuilt("No NFL replay rows for this market.")
         chosen = (season, week) if (season, week) in periods else periods[0]
         window = [p for p in periods if p <= chosen][:weeks]
-        df = conn.execute(
-            f"""SELECT season, week, player_name, team, opponent, position, actual, predicted, lo, hi, naive
-                FROM {REPLAY_TABLE} WHERE market = ? AND season * 100 + week IN (SELECT UNNEST(?::INT[]))""",
-            [market, [s * 100 + w for s, w in window]],
-        ).fetchdf()
+        try:
+            df = conn.execute(
+                f"""SELECT season, week, player_name, team, opponent, position, actual, predicted, lo, hi, naive, model_version
+                    FROM {REPLAY_TABLE} WHERE market = ? AND season * 100 + week IN (SELECT UNNEST(?::INT[]))""",
+                [market, [s * 100 + w for s, w in window]],
+            ).fetchdf()
+        except duckdb.BinderException:
+            raise NotBuilt("NFL replay table predates model versions: python -m backend.backtest.nfl_replay")
     finally:
         conn.close()
 
     label = lambda s, w: f"{s} · Week {w}"  # noqa: E731
+    versions = lambda d: ", ".join(sorted(d["model_version"].unique())) or None  # noqa: E731
     day_df = df[(df["season"] == chosen[0]) & (df["week"] == chosen[1])].sort_values("predicted", ascending=False)
     rolling = []
     for s, w in reversed(window):
-        if summ := summarize(df[(df["season"] == s) & (df["week"] == w)]):
-            rolling.append({"label": label(s, w), **summ})
+        wk = df[(df["season"] == s) & (df["week"] == w)]
+        if summ := summarize(wk):
+            rolling.append({"label": label(s, w), "model_version": versions(wk), **summ})
     return {
         "period": {"key": f"{chosen[0]}-{chosen[1]}", "label": label(*chosen)},
         "periods": [{"key": f"{s}-{w}", "label": label(s, w)} for s, w in periods],
@@ -161,7 +166,10 @@ def nfl(market: str, season: int | None, week: int | None, weeks: int) -> dict:
         "market": {"key": market, "label": NFL_LABELS[market]},
         "day": day_df,
         "rolling": rolling,
-        "source": "NFL walk-forward: each season projected by models trained only on earlier seasons.",
+        "model_version": versions(day_df),
+        "source": "NFL walk-forward: each week projected by a model trained only on games before it "
+                  "(earlier seasons, plus this season through the previous week once weekly models exist). "
+                  "Model versions read thruYYYY (seasons through YYYY) or thruYYYYwNN (plus that season through week NN).",
         "baseline_name": "Last-5 game average",
         "naive_is_model": False,
     }

@@ -7,6 +7,11 @@ that fold's own spread (fit on out-of-fold residuals inside those training
 seasons) — the same thing the live NFL projections show. Baseline is the
 player's last-5 average, as in nfl_market_model.baseline_report.
 
+Weekly walk-forward: in the current season, week N is re-projected by the
+same saved model the live page used for it (thru week N-1, see
+nfl_projections.version_for) when one exists, with that version's own
+spread. Every row records its `model_version`, and none saw its own week.
+
 Each fold's spread is also pickled to SPREADS_PATH ({market: {season:
 Spread}}) so the NFL ladder calibrators (parlay/nfl_legs.py) can turn
 these rows into out-of-sample P(over rung) without retraining anything.
@@ -26,8 +31,9 @@ from pathlib import Path
 import pandas as pd
 
 from backend.ingest.util import IngestResult, logger, utcnow
-from backend.models.nfl_market_model import MARKETS, walk_forward
+from backend.models.nfl_market_model import MARKETS, _predict, load_frame, walk_forward
 from backend.nfl_db import get_nfl_connection
+from backend.predict import nfl_projections
 from backend.predict.nfl_projections import Q_HI, Q_LO, quantiles
 
 REPLAY_TABLE = "nfl_walk_forward_replay"
@@ -50,6 +56,7 @@ CREATE OR REPLACE TABLE {REPLAY_TABLE} (
     lo          DOUBLE NOT NULL,
     hi          DOUBLE NOT NULL,
     naive       DOUBLE,
+    model_version VARCHAR NOT NULL,
     ingested_at TIMESTAMP NOT NULL,
     PRIMARY KEY (player_id, game_id, market)
 );
@@ -67,20 +74,44 @@ def _frames() -> tuple[pd.DataFrame, dict]:
             results = results.dropna(subset=[market.target])
             mu = results["predicted_mean"].to_numpy(float)
             lo, hi = mu.copy(), mu.copy()
+            version = results["season"].map(lambda s: f"thru{s - 1}").to_numpy(object)
             for season, spread in spreads.items():
                 m = (results["season"] == season).to_numpy()
                 lo[m], hi[m] = quantiles(mu[m], spread, Q_LO), quantiles(mu[m], spread, Q_HI)
+            mu, lo, hi = _weekly(conn, market, results, mu, lo, hi, version)
             frames.append(pd.DataFrame({
                 "player_id": results["player_id"], "player_name": results["player_name"],
                 "position": results["position"], "game_id": results["game_id"],
                 "season": results["season"], "week": results["week"], "market": market.name,
                 "actual": results[market.target], "predicted": mu, "lo": lo, "hi": hi,
-                "naive": results[f"{market.target}_roll5"],
+                "naive": results[f"{market.target}_roll5"], "model_version": version,
             }))
             logger.info("nfl_replay: %s %d rows", market.name, len(results))
     finally:
         conn.close()
     return pd.concat(frames, ignore_index=True).merge(ids, on=["player_id", "game_id"], how="left"), all_spreads
+
+
+def _weekly(conn, market, results, mu, lo, hi, version):
+    """Current-season weeks that had a weekly model when served: re-project
+    with that saved model (load only, never trains here)."""
+    season = nfl_projections.current_season()
+    cur = results["season"] == season
+    if not cur.any():
+        return mu, lo, hi
+    feats = load_frame(conn, market)
+    feats = feats[feats["season"] == season].set_index(["player_id", "game_id"])
+    for week in sorted(results.loc[cur, "week"].unique()):
+        v = nfl_projections.version_for(season, int(week))
+        if v.week is None:
+            continue
+        model, spread = nfl_projections._get_or_train(market, v)
+        m = (cur & (results["week"] == week)).to_numpy()
+        rows = feats.loc[list(zip(results.loc[m, "player_id"], results.loc[m, "game_id"]))]
+        mu[m] = _predict(model, rows)
+        lo[m], hi[m] = quantiles(mu[m], spread, Q_LO), quantiles(mu[m], spread, Q_HI)
+        version[m] = v.tag
+    return mu, lo, hi
 
 
 def build() -> IngestResult:

@@ -1,0 +1,319 @@
+{
+ "season": 2026,
+ "weeks": [
+  1,
+  2,
+  3,
+  4
+ ],
+ "markets": {
+  "passing_yards": {
+   "by_week": [
+    {
+     "week": 1,
+     "n": 34,
+     "weekly_version": "thru2025",
+     "base": {
+      "mae": 67.178,
+      "coverage": 0.471,
+      "width": 103.68
+     },
+     "weekly": {
+      "mae": 67.178,
+      "coverage": 0.471,
+      "width": 103.68
+     }
+    },
+    {
+     "week": 2,
+     "n": 33,
+     "weekly_version": "thru2026w01",
+     "base": {
+      "mae": 60.473,
+      "coverage": 0.576,
+      "width": 103.3
+     },
+     "weekly": {
+      "mae": 57.984,
+      "coverage": 0.606,
+      "width": 104.52
+     }
+    },
+    {
+     "week": 3,
+     "n": 34,
+     "weekly_version": "thru2026w02",
+     "base": {
+      "mae": 49.229,
+      "coverage": 0.559,
+      "width": 103.45
+     },
+     "weekly": {
+      "mae": 52.974,
+      "coverage": 0.471,
+      "width": 103.3
+     }
+    },
+    {
+     "week": 4,
+     "n": 33,
+     "weekly_version": "thru2026w03",
+     "base": {
+      "mae": 70.073,
+      "coverage": 0.364,
+      "width": 104.17
+     },
+     "weekly": {
+      "mae": 69.526,
+      "coverage": 0.394,
+      "width": 103.48
+     }
+    }
+   ],
+   "all": {
+    "n": 134,
+    "base": {
+     "mae": 61.685,
+     "coverage": 0.493,
+     "width": 103.65
+    },
+    "weekly": {
+     "mae": 61.888,
+     "coverage": 0.485,
+     "width": 103.74
+    }
+   }
+  },
+  "rushing_yards": {
+   "by_week": [
+    {
+     "week": 1,
+     "n": 103,
+     "weekly_version": "thru2025",
+     "base": {
+      "mae": 17.87,
+      "coverage": 0.515,
+      "width": 28.03
+     },
+     "weekly": {
+      "mae": 17.87,
+      "coverage": 0.515,
+      "width": 28.03
+     }
+    },
+    {
+     "week": 2,
+     "n": 101,
+     "weekly_version": "thru2026w01",
+     "base": {
+      "mae": 19.234,
+      "coverage": 0.525,
+      "width": 29.58
+     },
+     "weekly": {
+      "mae": 19.237,
+      "coverage": 0.515,
+      "width": 29.72
+     }
+    },
+    {
+     "week": 3,
+     "n": 101,
+     "weekly_version": "thru2026w02",
+     "base": {
+      "mae": 17.427,
+      "coverage": 0.485,
+      "width": 29.03
+     },
+     "weekly": {
+      "mae": 17.466,
+      "coverage": 0.495,
+      "width": 28.83
+     }
+    },
+    {
+     "week": 4,
+     "n": 98,
+     "weekly_version": "thru2026w03",
+     "base": {
+      "mae": 17.796,
+      "coverage": 0.561,
+      "width": 28.93
+     },
+     "weekly": {
+      "mae": 17.661,
+      "coverage": 0.541,
+      "width": 29.1
+     }
+    }
+   ],
+   "all": {
+    "n": 403,
+    "base": {
+     "mae": 18.083,
+     "coverage": 0.521,
+     "width": 28.89
+    },
+    "weekly": {
+     "mae": 18.06,
+     "coverage": 0.516,
+     "width": 28.92
+    }
+   }
+  },
+  "receiving_yards": {
+   "by_week": [
+    {
+     "week": 1,
+     "n": 191,
+     "weekly_version": "thru2025",
+     "base": {
+      "mae": 20.519,
+      "coverage": 0.471,
+      "width": 31.4
+     },
+     "weekly": {
+      "mae": 20.519,
+      "coverage": 0.471,
+      "width": 31.4
+     }
+    },
+    {
+     "week": 2,
+     "n": 191,
+     "weekly_version": "thru2026w01",
+     "base": {
+      "mae": 21.963,
+      "coverage": 0.534,
+      "width": 32.48
+     },
+     "weekly": {
+      "mae": 21.924,
+      "coverage": 0.524,
+      "width": 32.55
+     }
+    },
+    {
+     "week": 3,
+     "n": 186,
+     "weekly_version": "thru2026w02",
+     "base": {
+      "mae": 20.234,
+      "coverage": 0.527,
+      "width": 32.53
+     },
+     "weekly": {
+      "mae": 20.533,
+      "coverage": 0.522,
+      "width": 32.7
+     }
+    },
+    {
+     "week": 4,
+     "n": 183,
+     "weekly_version": "thru2026w03",
+     "base": {
+      "mae": 25.493,
+      "coverage": 0.432,
+      "width": 33.11
+     },
+     "weekly": {
+      "mae": 25.455,
+      "coverage": 0.426,
+      "width": 33.45
+     }
+    }
+   ],
+   "all": {
+    "n": 751,
+    "base": {
+     "mae": 22.027,
+     "coverage": 0.491,
+     "width": 32.37
+    },
+    "weekly": {
+     "mae": 22.082,
+     "coverage": 0.486,
+     "width": 32.52
+    }
+   }
+  },
+  "receptions": {
+   "by_week": [
+    {
+     "week": 1,
+     "n": 191,
+     "weekly_version": "thru2025",
+     "base": {
+      "mae": 1.509,
+      "coverage": 0.654,
+      "width": 2.52
+     },
+     "weekly": {
+      "mae": 1.509,
+      "coverage": 0.654,
+      "width": 2.52
+     }
+    },
+    {
+     "week": 2,
+     "n": 191,
+     "weekly_version": "thru2026w01",
+     "base": {
+      "mae": 1.577,
+      "coverage": 0.66,
+      "width": 2.51
+     },
+     "weekly": {
+      "mae": 1.572,
+      "coverage": 0.665,
+      "width": 2.51
+     }
+    },
+    {
+     "week": 3,
+     "n": 186,
+     "weekly_version": "thru2026w02",
+     "base": {
+      "mae": 1.622,
+      "coverage": 0.624,
+      "width": 2.54
+     },
+     "weekly": {
+      "mae": 1.629,
+      "coverage": 0.624,
+      "width": 2.54
+     }
+    },
+    {
+     "week": 4,
+     "n": 183,
+     "weekly_version": "thru2026w03",
+     "base": {
+      "mae": 1.788,
+      "coverage": 0.612,
+      "width": 2.56
+     },
+     "weekly": {
+      "mae": 1.788,
+      "coverage": 0.612,
+      "width": 2.56
+     }
+    }
+   ],
+   "all": {
+    "n": 751,
+    "base": {
+     "mae": 1.622,
+     "coverage": 0.638,
+     "width": 2.53
+    },
+    "weekly": {
+     "mae": 1.623,
+     "coverage": 0.639,
+     "width": 2.53
+    }
+   }
+  }
+ }
+}

@@ -9,10 +9,12 @@ own distribution (nfl_market_model.Spread).
 Projection-only: NFL odds collection is not enabled (shared 500-credit Odds
 API budget, spec 3.5), and this module never calls The Odds API.
 
-Models train on COMPLETED seasons only (2020 through last season), so
-every projection in the current season, past weeks included, is genuinely
-out-of-sample. Played games show the projection that was knowable before
-kickoff next to the actual result.
+Week N is projected by the newest saved model trained strictly before it:
+completed seasons plus this season through week N-1 (weekly walk-forward,
+see the models section), falling back to the completed-seasons model. So
+every projection, past weeks included, is out-of-sample, and played games
+show the projection that was knowable before kickoff next to the actual
+result, labelled with the model version that made it.
 
 Unplayed games: each team's players come from its latest depth chart
 (QB1, RB1-3, WR1-5, TE1-2), minus anyone listed Out on that week's injury
@@ -21,8 +23,8 @@ training, on a scratch in-memory database that attaches the NFL warehouse
 read-only, so serving never writes to (or locks) the warehouse.
 
 Cached per week in data/projections/nfl_<season>_w<week>.json and
-recomputed when the cache is from an earlier ET day. Models are saved once
-per completed season and reused (see the models section); the API checks
+recomputed when the cache is from an earlier ET day or a newer model
+version for that week has been saved. The API checks
 ensure_models() first so a missing model trains in the background instead
 of inside a request.
 """
@@ -34,6 +36,7 @@ import os
 import pickle
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -53,7 +56,7 @@ from backend.nfl_db import DEFAULT_NFL_DB_PATH
 ET = ZoneInfo("America/New_York")
 CACHE_DIR = Path("data/projections")
 MODEL_DIR = Path("data/models")
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 Q_LO, Q_HI = 0.25, 0.75
 DEPTH_LIMITS = {"QB": 1, "RB": 3, "WR": 5, "TE": 2}
 POSTSEASON_LABELS = {"WC": "Wild Card", "DIV": "Divisional", "CON": "Conference", "SB": "Super Bowl"}
@@ -103,13 +106,40 @@ def default_week(week_list: list[dict]) -> int | None:
 
 # ---- models -----------------------------------------------------------------
 #
-# Models train on completed seasons only, which never change, so a saved
-# nfl_<market>_thru<season>.txt + _spread.pkl pair is valid for as long as it
-# loads: there is no age rule. (An old 7-day mtime rule retrained all four
-# markets on identical data every week, inside an API request.) Training only
-# happens when a pair is missing or unreadable; one lock per pair makes
-# concurrent callers share that run, and files are written atomically so a
-# reader never sees a half-written model.
+# Two kinds of saved model, both versioned by what they were trained on:
+#   nfl_<market>_thru2025       every completed season (the base)
+#   nfl_<market>_thru2026w04    ... plus the current season through week 4
+#                               (weekly walk-forward, trained by the Tuesday job)
+# Week N of a season is always projected by the newest version trained
+# strictly before week N (thru week N-1 if it exists, else an earlier week,
+# else the base), so a played week's projection never saw that week. Old
+# versions are kept: they're what past weeks were projected with.
+#
+# Weekly retraining is OFF unless NFL_WEEKLY_RETRAIN=1: on 2026 weeks 1-4 it
+# didn't beat the base model (reports/nfl_weekly_retrain_eval.json; MAE and
+# 25-75 coverage within noise, passing yards slightly worse). Off, every
+# week uses the base and no weekly versions are trained or served.
+#
+# A saved version's data never changes, so it's valid for as long as it
+# loads (no age rule). Training only happens when a version is missing; one
+# lock per version makes concurrent callers share that run, files are
+# written atomically, and the API trains in a background thread
+# (ensure_models), never inside a request.
+
+
+@dataclass(frozen=True, order=True)
+class Through:
+    season: int
+    week: int | None = None  # None: the whole season
+
+    @property
+    def tag(self) -> str:
+        return f"thru{self.season}" if self.week is None else f"thru{self.season}w{self.week:02d}"
+
+    @property
+    def label(self) -> str:
+        return f"seasons through {self.season}" if self.week is None else f"seasons through {self.season - 1} + {self.season} week{'s 1-' if self.week > 1 else ' '}{self.week}"
+
 
 _MODELS: dict[str, tuple[lgb.Booster, Spread]] = {}
 _LOCKS: dict[str, threading.Lock] = {}
@@ -120,8 +150,12 @@ _warm_error: tuple[float, str] | None = None  # (when, message) of the last fail
 WARM_RETRY_S = 300
 
 
-def _paths(market: Market, train_through: int) -> tuple[Path, Path]:
-    stem = f"nfl_{market.name}_thru{train_through}"
+def weekly_retrain_enabled() -> bool:
+    return os.environ.get("NFL_WEEKLY_RETRAIN") == "1"
+
+
+def _paths(market: Market, through: Through) -> tuple[Path, Path]:
+    stem = f"nfl_{market.name}_{through.tag}"
     return MODEL_DIR / f"{stem}.txt", MODEL_DIR / f"{stem}_spread.pkl"
 
 
@@ -146,21 +180,44 @@ def _write_atomic(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def _training_frame(market: Market, train_through: int) -> pd.DataFrame:
+def _where(through: Through) -> tuple[str, list]:
+    if through.week is None:
+        return "season <= ?", [through.season]
+    return "(season < ? OR (season = ? AND week <= ?))", [through.season, through.season, through.week]
+
+
+def _training_frame(market: Market, through: Through) -> pd.DataFrame:
+    where, params = _where(through)
     conn = duckdb.connect(_db_path(), read_only=True)
     try:
         return conn.execute(
-            f"SELECT * FROM nfl_features WHERE {market.universe} AND season <= ? ORDER BY kickoff_utc, game_id, player_id",
-            [train_through],
+            f"SELECT * FROM nfl_features WHERE {market.universe} AND {where} ORDER BY kickoff_utc, game_id, player_id",
+            params,
         ).fetchdf()
     finally:
         conn.close()
 
 
-def _get_or_train(market: Market, train_through: int) -> tuple[lgb.Booster, Spread]:
-    if train_through >= current_season():
-        raise ValueError(f"NFL models train on completed seasons only; {train_through} is in progress")
-    model_path, spread_path = _paths(market, train_through)
+def complete(through: Through) -> bool:
+    """True when every game the version would train on is final, i.e. it
+    can't absorb a partial week. Completed seasons only for the base."""
+    if through.week is None:
+        return through.season < current_season()
+    conn = duckdb.connect(_db_path(), read_only=True)
+    try:
+        n, open_, featured = conn.execute(
+            """SELECT COUNT(*), COUNT(*) - COUNT(home_score),
+                      (SELECT COUNT(*) FROM nfl_features WHERE season = $1 AND week = $2)
+               FROM nfl_schedule WHERE season = $1 AND week <= $2""",
+            [through.season, through.week],
+        ).fetchone()
+    finally:
+        conn.close()
+    return n > 0 and open_ == 0 and featured > 0
+
+
+def _get_or_train(market: Market, through: Through) -> tuple[lgb.Booster, Spread]:
+    model_path, spread_path = _paths(market, through)
     key = str(model_path)
     if key in _MODELS:
         return _MODELS[key]
@@ -169,37 +226,69 @@ def _get_or_train(market: Market, train_through: int) -> tuple[lgb.Booster, Spre
             return _MODELS[key]
         loaded = _load(model_path, spread_path)
         if loaded is None:
-            df = _training_frame(market, train_through)
+            if not complete(through):
+                raise ValueError(f"NFL {through.tag} would train on games that aren't final")
+            df = _training_frame(market, through)
             df["pos_code"] = df["position"].map(POS_CODES)
             spread = fit_spread(df[market.target].to_numpy(float), _oof_predictions(df, market), market.family)
             model = _train(df, market)
             MODEL_DIR.mkdir(parents=True, exist_ok=True)
             _write_atomic(spread_path, pickle.dumps(spread))
             _write_atomic(model_path, model.model_to_string().encode())
-            logger.info("nfl_projections: trained %s on seasons through %d", market.name, train_through)
+            logger.info("nfl_projections: trained %s on %s (%s)", market.name, through.label, through.tag)
             loaded = (model, spread)
         _MODELS[key] = loaded
         return loaded
 
 
-def models_ready(train_through: int) -> bool:
-    """True when every market's model is in memory or saved on disk, i.e.
-    serving won't train."""
-    return all(str(p) in _MODELS or (p.exists() and s.exists()) for p, s in (_paths(m, train_through) for m in MARKETS))
+def models_ready(through: Through) -> bool:
+    """True when every market's version is in memory or saved on disk, i.e.
+    serving it won't train."""
+    return all(str(p) in _MODELS or (p.exists() and s.exists()) for p, s in (_paths(m, through) for m in MARKETS))
 
 
-def warm_models(train_through: int) -> None:
+def warm_models(through: Through) -> None:
     for m in MARKETS:
-        _get_or_train(m, train_through)
+        _get_or_train(m, through)
 
 
-def ensure_models(season: int | None = None) -> dict | None:
-    """Non-blocking: None when models are ready; otherwise starts (at most
-    one) background training run and returns a "warming" payload for the
-    API to send instead of blocking the request."""
+def target_version(season: int, week: int) -> Through:
+    """The version week N should use: thru week N-1, or the base for week 1."""
+    return Through(season - 1) if week <= 1 else Through(season, week - 1)
+
+
+def version_for(season: int, week: int) -> Through:
+    """The newest version saved before week N: thru N-1, else the latest
+    earlier week, else the base (thru last season). Never one that saw week N."""
+    if not weekly_retrain_enabled():
+        return Through(season - 1)
+    for w in range(week - 1, 0, -1):
+        if models_ready(Through(season, w)):
+            return Through(season, w)
+    return Through(season - 1)
+
+
+def ensure_models(season: int | None = None, week: int | None = None) -> dict | None:
+    """Non-blocking: None when serving won't train; otherwise starts (at
+    most one) background training run and returns a "warming" payload for
+    the API to send instead of blocking. Trains the base if it's missing,
+    and week N's thru-(N-1) version once that week's results are final;
+    until then week N is served by an earlier version."""
     global _warm_thread, _warm_error
-    train_through = (season or current_season()) - 1
-    if models_ready(train_through):
+    season = season or current_season()
+    if week is None:
+        conn = duckdb.connect(_db_path(), read_only=True)
+        try:
+            week = default_week(weeks(conn, season))
+        finally:
+            conn.close()
+    needed = [Through(season - 1)]
+    if week is not None and week > 1 and weekly_retrain_enabled():
+        needed.append(target_version(season, week))
+    missing = [t for t in needed if not models_ready(t)]
+    if missing and missing[-1].week is not None and not complete(missing[-1]):
+        missing.pop()  # week N-1 not final yet: serve the fallback
+    if not missing:
         return None
     with _WARM_LOCK:
         idle = _warm_thread is None or not _warm_thread.is_alive()
@@ -209,14 +298,15 @@ def ensure_models(season: int | None = None) -> dict | None:
             def run() -> None:
                 global _warm_error
                 try:
-                    warm_models(train_through)
+                    for t in missing:
+                        warm_models(t)
                     _warm_error = None
                 except Exception as e:
                     _warm_error = (time.time(), str(e))
                     logger.exception("nfl_projections: model warm-up failed")
             _warm_thread = threading.Thread(target=run, name="nfl-model-warm", daemon=True)
             _warm_thread.start()
-    return {"status": "warming", "league": "nfl", "message": f"Training NFL models on seasons through {train_through}; this takes a few minutes."}
+    return {"status": "warming", "league": "nfl", "message": f"Training NFL models on {missing[0].label}; this takes a few minutes."}
 
 
 def quantiles(mu: np.ndarray, spread: Spread, q: float) -> np.ndarray:
@@ -258,8 +348,9 @@ def _pending_players(conn: duckdb.DuckDBPyConnection, season: int, week: int) ->
 
 
 def compute(season: int, week: int) -> dict:
-    train_through = season - 1
-    models = {m.name: _get_or_train(m, train_through) for m in MARKETS}
+    # Loads only: ensure_models / the Tuesday job do the training.
+    version = version_for(season, week)
+    models = {m.name: _get_or_train(m, version) for m in MARKETS}
 
     conn = _scratch()
     try:
@@ -350,17 +441,23 @@ def compute(season: int, week: int) -> dict:
         "week": week,
         "weeks": week_list,
         "computed_at": datetime.now(ET).isoformat(),
-        "models_trained_through": train_through,
+        "models_trained_through": season - 1,
+        "model_version": version.tag,
+        "model_label": version.label,
         "injuries_posted": bool(injuries_posted),
         "games": games,
     }
 
 
-def _read_cache(path: Path) -> dict | None:
+def _read_cache(path: Path, season: int, week: int) -> dict | None:
+    """Today's cache, unless a newer model version for this week has been
+    saved since (e.g. the Tuesday job trained thru week N-1)."""
     if not path.exists():
         return None
     cached = json.loads(path.read_text())
-    if cached.get("version") == CACHE_VERSION and datetime.fromisoformat(cached["computed_at"]).date() == datetime.now(ET).date():
+    if (cached.get("version") == CACHE_VERSION
+            and datetime.fromisoformat(cached["computed_at"]).date() == datetime.now(ET).date()
+            and cached.get("model_version") == version_for(season, week).tag):
         return cached
     return None
 
@@ -377,11 +474,11 @@ def get(week: int | None = None, season: int | None = None) -> dict:
             return {"league": "nfl", "season": season, "week": None, "weeks": [], "games": []}
 
     path = CACHE_DIR / f"nfl_{season}_w{week:02d}.json"
-    cached = _read_cache(path)
+    cached = _read_cache(path, season, week)
     if cached:
         return cached
     with _lock_for(str(path)):  # concurrent requests for one week share a compute
-        fresh = _read_cache(path)
+        fresh = _read_cache(path, season, week)
         if fresh:
             return fresh
         data = compute(season, week)
@@ -390,14 +487,42 @@ def get(week: int | None = None, season: int | None = None) -> dict:
         return data
 
 
+def train_weekly(season: int | None = None) -> list[str]:
+    """Tuesday job: train every weekly version of this season whose weeks
+    are all final and that isn't saved yet (normally just last week's).
+    Older versions are kept."""
+    season = season or current_season()
+    if not weekly_retrain_enabled():
+        return []
+    conn = duckdb.connect(_db_path(), read_only=True)
+    try:
+        played = [w for (w,) in conn.execute("SELECT DISTINCT week FROM nfl_features WHERE season = ? ORDER BY 1", [season]).fetchall()]
+    finally:
+        conn.close()
+    trained = []
+    for w in played:
+        t = Through(season, w)
+        if not models_ready(t) and complete(t):
+            warm_models(t)
+            trained.append(t.tag)
+    return trained
+
+
 if __name__ == "__main__":
     import argparse
 
-    # Weekly results job: loads the saved thru-last-season models (training
-    # only if they're missing), then builds the week's projection cache.
+    # Tuesday results job: --retrain trains last week's walk-forward version
+    # (thru<season>w<NN>), then the week's projection cache is built with it.
     parser = argparse.ArgumentParser(description="Warm the NFL models and projection cache for a week")
     parser.add_argument("--week", type=int, default=None)
+    parser.add_argument("--retrain", action="store_true", help="train missing weekly walk-forward versions first")
     args = parser.parse_args()
+    warm_models(Through(current_season() - 1))
+    if args.retrain:
+        if not weekly_retrain_enabled():
+            print("weekly retrain off (set NFL_WEEKLY_RETRAIN=1 in .env to enable)")
+        else:
+            print(f"weekly versions trained: {train_weekly() or 'none (up to date)'}")
     d = get(args.week)
     n = sum(len(t["players"]) for g in d["games"] for t in g["teams"].values())
-    print(f"NFL {d['season']} week {d['week']}: {len(d['games'])} games, {n} players")
+    print(f"NFL {d['season']} week {d['week']} ({d['model_version']}): {len(d['games'])} games, {n} players")

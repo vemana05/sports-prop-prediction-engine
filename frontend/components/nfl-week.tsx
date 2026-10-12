@@ -113,7 +113,8 @@ function Notes({ d }: { d: NflWeek }) {
       <ul className="mt-2 list-disc space-y-1 pl-5 text-muted">
         <li>Ranges are the middle 50% of outcomes (25th–75th percentile). Half of real games land outside them.</li>
         <li>
-          Models were trained on {d.models_trained_through} and earlier seasons only, so every {d.season} number here is out of sample.
+          Projected by model <span className="font-mono text-xs">{d.model_version}</span> ({d.model_label}): trained only on games
+          before this week, so every number here, actuals included, is out of sample.
           Final games show the pre-kickoff projection next to what actually happened.
         </li>
         <li>

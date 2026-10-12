@@ -57,7 +57,7 @@ NFL_MANUAL_UNAVAILABLE = "Build my own isn't available for NFL yet; veto legs in
 
 def _nfl_pool(week: int | None) -> nfl_builder.WeekPool:
     # GET routes return the "warming" payload themselves; this covers POSTs.
-    if warming := nfl_projections.ensure_models():
+    if warming := nfl_projections.ensure_models(week=week):
         raise HTTPException(503, warming["message"])
     try:
         return nfl_builder.NFL_SLATE.pool(week)
@@ -187,7 +187,7 @@ def tiers() -> dict:
 @app.get("/api/slate")
 def slate(league: League = "nba", week: int | None = Query(None, ge=1, le=23)) -> dict:
     if league == "nfl":
-        return nfl_projections.ensure_models() or nfl_builder.slate_json(_nfl_pool(week))
+        return nfl_projections.ensure_models(week=week) or nfl_builder.slate_json(_nfl_pool(week))
     return _slate_json()
 
 
@@ -212,7 +212,7 @@ def parlays(
     week: int | None = Query(None, ge=1, le=23),
 ) -> dict:
     if league == "nfl":
-        if warming := nfl_projections.ensure_models():
+        if warming := nfl_projections.ensure_models(week=week):
             return {**warming, "parlays": []}
         tier_cfg = load_tiers()[tier]
         wp = _nfl_pool(week)
@@ -407,7 +407,7 @@ def schedule(
     """Never calls The Odds API: "lines posted" only reflects odds already
     collected into the slate (NBA). NFL is projections only."""
     if league == "nfl":
-        if warming := nfl_projections.ensure_models():
+        if warming := nfl_projections.ensure_models(week=week):
             return warming
         try:
             return {"status": "ready", **nfl_projections.get(week)}

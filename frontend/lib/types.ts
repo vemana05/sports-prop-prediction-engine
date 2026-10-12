@@ -245,6 +245,9 @@ export interface NflWeek {
   weeks: NflWeekInfo[];
   computed_at: string;
   models_trained_through: number;
+  /** Saved model that projected this week: thru2025, or thru2026w03 (2026 through week 3). */
+  model_version: string;
+  model_label: string;
   injuries_posted: boolean;
   games: NflGame[];
 }
@@ -350,8 +353,10 @@ export type Replay =
       summary: ReplaySummary | null;
       biggest_misses: ReplayRow[];
       rows: ReplayRow[];
-      rolling: (ReplaySummary & { label: string })[];
+      rolling: (ReplaySummary & { label: string; model_version?: string | null })[];
       weeks: number;
+      /** NFL: the saved model version(s) that projected this week, e.g. thru2026w03. */
+      model_version?: string | null;
       source: string;
       baseline_name: string;
       naive_is_model: boolean;

@@ -114,7 +114,10 @@ function Controls({ r, onMarket, onPeriod }: { r: Ready; onMarket: (m: string) =
         <Button variant="ghost" size="icon" aria-label={isNba ? "Next game day" : "Next week"} disabled={!newer} onClick={() => newer && onPeriod(newer.key)}>
           <ChevronRight className="size-4" />
         </Button>
-        <span className="text-sm text-muted">{r.period.label}</span>
+        <span className="text-sm text-muted">
+          {r.period.label}
+          {r.model_version && <> · model <span className="font-mono text-xs">{r.model_version}</span></>}
+        </span>
       </div>
     </div>
   );
@@ -233,7 +236,10 @@ function Rolling({ r, weeks, onWeeks }: { r: Ready; weeks: number; onWeeks: (n: 
               const better = w.naive_mae != null && model < w.naive_mae;
               return (
                 <tr key={w.label}>
-                  <th scope="row" className="px-4 py-2 font-medium">{w.label}</th>
+                  <th scope="row" className="px-4 py-2 font-medium">
+                    {w.label}
+                    {w.model_version && <span className="ml-2 font-mono text-xs font-normal text-muted">{w.model_version}</span>}
+                  </th>
                   <td className="num px-4 py-2 text-right text-muted">{w.n}</td>
                   <td className={cn("num px-4 py-2 text-right font-semibold", !r.naive_is_model && w.naive_mae != null && (better ? "text-safe-ink" : "text-danger-ink"))}>{fmt(model, 2)}</td>
                   <td className="num px-4 py-2 text-right text-muted">{fmt(w.naive_mae, 2)}</td>
