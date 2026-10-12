@@ -29,7 +29,9 @@ const weekRange = (w: NflWeekInfo) =>
  * and tentative per-player projections. Projections only, no odds. */
 export function NflWeekView() {
   const [week, setWeek] = useState<number | null>(null); // null = server's default (current week)
-  const { data, error, isFetching, isPlaceholderData } = useNflWeek(week, true);
+  const { data: raw, error, isFetching, isPlaceholderData } = useNflWeek(week, true);
+  const data = raw?.status === "ready" ? raw : undefined;
+  const pending = raw && raw.status !== "ready" ? raw : undefined;
   const current = week ?? data?.week ?? null;
 
   return (
@@ -37,8 +39,11 @@ export function NflWeekView() {
       <WeekPicker weeks={data?.weeks ?? []} current={current} onChange={setWeek} busy={isFetching} />
       {error ? (
         <p className="mt-6 text-danger-ink">Couldn't load NFL projections: {(error as Error).message}</p>
+      ) : pending?.status === "error" ? (
+        <p className="mt-6 text-danger-ink">{pending.message}</p>
       ) : !data ? (
         <div className="mt-6 space-y-3">
+          {pending && <p className="text-sm text-muted" role="status">{pending.message}</p>}
           <Skeleton className="h-24 w-full" />
           {Array.from({ length: 3 }, (_, i) => <Skeleton key={i} className="h-20 w-full" />)}
         </div>

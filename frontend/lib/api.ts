@@ -9,6 +9,7 @@ import type {
   ParlaysResponse,
   Performance,
   ScheduleDay,
+  NflWarming,
   NflWeek,
   ReplaceResponse,
   Replay,
@@ -124,8 +125,9 @@ export function useBetMutations() {
 export const useNflWeek = (week: number | null, enabled: boolean) =>
   useQuery({
     queryKey: ["nfl-week", week],
-    queryFn: () => get<NflWeek>(`/api/schedule?league=nfl${week ? `&week=${week}` : ""}`),
+    queryFn: () => get<NflWeek | NflWarming>(`/api/schedule?league=nfl${week ? `&week=${week}` : ""}`),
     placeholderData: keepPreviousData,
+    refetchInterval: pollWhileWarming,
     enabled,
     retry: 4, // 503 while an NFL data job holds the warehouse
     retryDelay: 2500,

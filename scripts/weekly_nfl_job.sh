@@ -7,7 +7,10 @@ export PATH="/Users/vemana/.docker/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 #   results  (Tuesday)            scores, player stats, snap counts, injuries and
 #                                 depth charts for finished games, then rebuilds
 #                                 nfl_features and backs up, then OddsPapi closing
-#                                 lines for last week's games. Never retrains models.
+#                                 lines for last week's games, then warms the NFL
+#                                 model + projection cache. Models are trained on
+#                                 completed seasons only and reused from data/models;
+#                                 this only trains if a thru-last-season file is missing.
 # Separate from daily_odds_job.sh on purpose: it touches only the NFL
 # warehouse, never warehouse.duckdb, and spends no Odds API credits. The
 # OddsPapi steps spend nothing unless ODDSPAPI_API_KEY is set and
@@ -67,6 +70,12 @@ else
         # The Schedule page caches each week's projections for a day; drop this
         # season's caches so new actuals show now instead of tomorrow.
         rm -f data/projections/nfl_${SEASON}_w*.json
+        # Warm the models + this week's projections so the first page load
+        # doesn't have to. Runs in the api service for its live-mounted source;
+        # `run` doesn't publish ports, so it won't clash with the stopped api.
+        echo "--- warming NFL models + projection cache ---" | tee -a "$LOG_FILE"
+        docker compose run --rm --no-deps api python -m backend.predict.nfl_projections 2>&1 | tee -a "$LOG_FILE"
+        [ "${PIPESTATUS[0]}" -eq 0 ] || echo "WARNING: NFL warm-up failed; the API will train on first request" | tee -a "$LOG_FILE"
     fi
     # Closing prop lines for last week's games. A failure here is logged but
     # doesn't fail the results job: stats and features are already in.

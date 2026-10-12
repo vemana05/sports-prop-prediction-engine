@@ -231,6 +231,13 @@ export interface NflWeekInfo {
   n_final: number;
 }
 
+/** Sent instead of NflWeek while the NFL models train in the background. */
+export interface NflWarming {
+  status: "warming" | "error";
+  league: "nfl";
+  message: string;
+}
+
 export interface NflWeek {
   status: "ready";
   season: number;

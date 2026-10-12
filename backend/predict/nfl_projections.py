@@ -21,7 +21,10 @@ training, on a scratch in-memory database that attaches the NFL warehouse
 read-only, so serving never writes to (or locks) the warehouse.
 
 Cached per week in data/projections/nfl_<season>_w<week>.json and
-recomputed when the cache is from an earlier ET day.
+recomputed when the cache is from an earlier ET day. Models are saved once
+per completed season and reused (see the models section); the API checks
+ensure_models() first so a missing model trains in the background instead
+of inside a request.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import pickle
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -49,7 +53,6 @@ from backend.nfl_db import DEFAULT_NFL_DB_PATH
 ET = ZoneInfo("America/New_York")
 CACHE_DIR = Path("data/projections")
 MODEL_DIR = Path("data/models")
-MODEL_MAX_AGE_DAYS = 7
 CACHE_VERSION = 1
 Q_LO, Q_HI = 0.25, 0.75
 DEPTH_LIMITS = {"QB": 1, "RB": 3, "WR": 5, "TE": 2}
@@ -99,27 +102,121 @@ def default_week(week_list: list[dict]) -> int | None:
 
 
 # ---- models -----------------------------------------------------------------
+#
+# Models train on completed seasons only, which never change, so a saved
+# nfl_<market>_thru<season>.txt + _spread.pkl pair is valid for as long as it
+# loads: there is no age rule. (An old 7-day mtime rule retrained all four
+# markets on identical data every week, inside an API request.) Training only
+# happens when a pair is missing or unreadable; one lock per pair makes
+# concurrent callers share that run, and files are written atomically so a
+# reader never sees a half-written model.
 
-def _get_or_train(market: Market, train_through: int) -> tuple[lgb.Booster, Spread]:
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    model_path = MODEL_DIR / f"nfl_{market.name}_thru{train_through}.txt"
-    spread_path = MODEL_DIR / f"nfl_{market.name}_thru{train_through}_spread.pkl"
-    fresh = model_path.exists() and spread_path.exists() and (time.time() - model_path.stat().st_mtime) / 86400 <= MODEL_MAX_AGE_DAYS
-    if fresh:
+_MODELS: dict[str, tuple[lgb.Booster, Spread]] = {}
+_LOCKS: dict[str, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+_WARM_LOCK = threading.Lock()
+_warm_thread: threading.Thread | None = None
+_warm_error: tuple[float, str] | None = None  # (when, message) of the last failed run
+WARM_RETRY_S = 300
+
+
+def _paths(market: Market, train_through: int) -> tuple[Path, Path]:
+    stem = f"nfl_{market.name}_thru{train_through}"
+    return MODEL_DIR / f"{stem}.txt", MODEL_DIR / f"{stem}_spread.pkl"
+
+
+def _lock_for(key: str) -> threading.Lock:
+    with _LOCKS_GUARD:
+        return _LOCKS.setdefault(key, threading.Lock())
+
+
+def _load(model_path: Path, spread_path: Path) -> tuple[lgb.Booster, Spread] | None:
+    if not (model_path.exists() and spread_path.exists()):
+        return None
+    try:
         return lgb.Booster(model_file=str(model_path)), pickle.loads(spread_path.read_bytes())
+    except Exception as e:  # truncated/corrupt file: retrain rather than fail every request
+        logger.warning("nfl_projections: can't load %s (%s); retraining", model_path.name, e)
+        return None
 
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
+def _training_frame(market: Market, train_through: int) -> pd.DataFrame:
     conn = duckdb.connect(_db_path(), read_only=True)
     try:
-        df = conn.execute(f"SELECT * FROM nfl_features WHERE {market.universe} AND season <= ? ORDER BY kickoff_utc, game_id, player_id", [train_through]).fetchdf()
+        return conn.execute(
+            f"SELECT * FROM nfl_features WHERE {market.universe} AND season <= ? ORDER BY kickoff_utc, game_id, player_id",
+            [train_through],
+        ).fetchdf()
     finally:
         conn.close()
-    df["pos_code"] = df["position"].map(POS_CODES)
-    spread = fit_spread(df[market.target].to_numpy(float), _oof_predictions(df, market), market.family)
-    model = _train(df, market)
-    model.save_model(str(model_path))
-    spread_path.write_bytes(pickle.dumps(spread))
-    logger.info("nfl_projections: trained %s on seasons through %d", market.name, train_through)
-    return model, spread
+
+
+def _get_or_train(market: Market, train_through: int) -> tuple[lgb.Booster, Spread]:
+    if train_through >= current_season():
+        raise ValueError(f"NFL models train on completed seasons only; {train_through} is in progress")
+    model_path, spread_path = _paths(market, train_through)
+    key = str(model_path)
+    if key in _MODELS:
+        return _MODELS[key]
+    with _lock_for(key):
+        if key in _MODELS:  # another thread finished while we waited
+            return _MODELS[key]
+        loaded = _load(model_path, spread_path)
+        if loaded is None:
+            df = _training_frame(market, train_through)
+            df["pos_code"] = df["position"].map(POS_CODES)
+            spread = fit_spread(df[market.target].to_numpy(float), _oof_predictions(df, market), market.family)
+            model = _train(df, market)
+            MODEL_DIR.mkdir(parents=True, exist_ok=True)
+            _write_atomic(spread_path, pickle.dumps(spread))
+            _write_atomic(model_path, model.model_to_string().encode())
+            logger.info("nfl_projections: trained %s on seasons through %d", market.name, train_through)
+            loaded = (model, spread)
+        _MODELS[key] = loaded
+        return loaded
+
+
+def models_ready(train_through: int) -> bool:
+    """True when every market's model is in memory or saved on disk, i.e.
+    serving won't train."""
+    return all(str(p) in _MODELS or (p.exists() and s.exists()) for p, s in (_paths(m, train_through) for m in MARKETS))
+
+
+def warm_models(train_through: int) -> None:
+    for m in MARKETS:
+        _get_or_train(m, train_through)
+
+
+def ensure_models(season: int | None = None) -> dict | None:
+    """Non-blocking: None when models are ready; otherwise starts (at most
+    one) background training run and returns a "warming" payload for the
+    API to send instead of blocking the request."""
+    global _warm_thread, _warm_error
+    train_through = (season or current_season()) - 1
+    if models_ready(train_through):
+        return None
+    with _WARM_LOCK:
+        idle = _warm_thread is None or not _warm_thread.is_alive()
+        if idle and _warm_error and time.time() - _warm_error[0] < WARM_RETRY_S:
+            return {"status": "error", "league": "nfl", "message": f"NFL model training failed: {_warm_error[1]}"}
+        if idle:
+            def run() -> None:
+                global _warm_error
+                try:
+                    warm_models(train_through)
+                    _warm_error = None
+                except Exception as e:
+                    _warm_error = (time.time(), str(e))
+                    logger.exception("nfl_projections: model warm-up failed")
+            _warm_thread = threading.Thread(target=run, name="nfl-model-warm", daemon=True)
+            _warm_thread.start()
+    return {"status": "warming", "league": "nfl", "message": f"Training NFL models on seasons through {train_through}; this takes a few minutes."}
 
 
 def quantiles(mu: np.ndarray, spread: Spread, q: float) -> np.ndarray:
@@ -259,6 +356,15 @@ def compute(season: int, week: int) -> dict:
     }
 
 
+def _read_cache(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    cached = json.loads(path.read_text())
+    if cached.get("version") == CACHE_VERSION and datetime.fromisoformat(cached["computed_at"]).date() == datetime.now(ET).date():
+        return cached
+    return None
+
+
 def get(week: int | None = None, season: int | None = None) -> dict:
     season = season or current_season()
     if week is None:
@@ -271,20 +377,25 @@ def get(week: int | None = None, season: int | None = None) -> dict:
             return {"league": "nfl", "season": season, "week": None, "weeks": [], "games": []}
 
     path = CACHE_DIR / f"nfl_{season}_w{week:02d}.json"
-    if path.exists():
-        cached = json.loads(path.read_text())
-        if cached.get("version") == CACHE_VERSION and datetime.fromisoformat(cached["computed_at"]).date() == datetime.now(ET).date():
-            return cached
-    data = compute(season, week)
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data))
-    return data
+    cached = _read_cache(path)
+    if cached:
+        return cached
+    with _lock_for(str(path)):  # concurrent requests for one week share a compute
+        fresh = _read_cache(path)
+        if fresh:
+            return fresh
+        data = compute(season, week)
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _write_atomic(path, json.dumps(data).encode())
+        return data
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Warm the NFL projection cache for a week")
+    # Weekly results job: loads the saved thru-last-season models (training
+    # only if they're missing), then builds the week's projection cache.
+    parser = argparse.ArgumentParser(description="Warm the NFL models and projection cache for a week")
     parser.add_argument("--week", type=int, default=None)
     args = parser.parse_args()
     d = get(args.week)
