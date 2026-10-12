@@ -28,12 +28,28 @@ export interface Leg {
   book_p: number | null;
   /** model_p shrunk 30% toward book_p — what tier eligibility uses */
   shrunk_p: number;
-  decimal_odds: number;
-  american_odds: number;
+  /** null for an NFL leg with no typed price */
+  decimal_odds: number | null;
+  american_odds: number | null;
   predicted_mean: number;
   reason: string;
   headshot_url: string | null;
   injury: string | null;
+  // NFL only
+  base_id?: string;
+  position?: string;
+  rung?: number | null;
+  priced?: boolean;
+  vig_removed?: boolean;
+  under_american?: number | null;
+  warnings?: string[];
+}
+
+/** A sportsbook price typed into the slip for one NFL leg. */
+export interface LegPrice {
+  line?: string;
+  over?: number;
+  under?: number;
 }
 
 export interface Parlay {
@@ -45,11 +61,12 @@ export interface Parlay {
   /** p_hit shrunk toward the book's no-vig parlay probability — what EV and stake use */
   p_sized: number;
   no_vig_p: number | null;
-  book_p: number;
-  decimal_odds: number;
-  american_odds: number;
-  ev_per_dollar: number;
-  model_ev_per_dollar: number;
+  /** null when any NFL leg is unpriced */
+  book_p: number | null;
+  decimal_odds: number | null;
+  american_odds: number | null;
+  ev_per_dollar: number | null;
+  model_ev_per_dollar: number | null;
   stake: number;
   payout: number;
   capped_by_tier: boolean;
@@ -57,6 +74,12 @@ export interface Parlay {
   flagged: boolean;
   flag_reasons: string[];
   in_tier_band: boolean;
+  // NFL only
+  priced?: boolean;
+  n_priced?: number;
+  fair_american_odds?: number | null;
+  notes?: string[];
+  warnings?: string[];
 }
 
 export interface SearchReport {
@@ -82,6 +105,13 @@ export interface SlateInfo {
   games?: GameInfo[];
   first_tip_utc?: string | null;
   odds_pulled_at?: string | null;
+  // NFL only
+  season?: number;
+  week?: number;
+  weeks?: NflWeekInfo[];
+  injuries_posted?: boolean;
+  calibrated?: boolean;
+  untested_note?: string;
 }
 
 export interface ParlaysResponse extends SlateInfo {

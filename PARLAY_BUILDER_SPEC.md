@@ -4,6 +4,27 @@
 >
 > **v2 changes:** many more data sources (Section 3), a source registry + player ID crosswalk so sources can be combined safely (Section 4), and a complete visual design spec with a Next.js frontend replacing Streamlit (Section 10).
 
+## Status (2026-10-12)
+
+| Phase | Status | What exists |
+|---|---|---|
+| 1 Data foundation (NBA) | Built | Source registry + runner with fallback, nba_api, pbpstats, injuries, Sleeper, crosswalk, validation (5.6) |
+| 2 Features + models (NBA) | Built | Minutes, points, rebounds, assists, 3PM; isotonic calibration; walk-forward (5.6–5.8) |
+| 3 Odds | Partly built | NBA `player_points` daily from The Odds API with credit guard (5.7). NFL prop lines from OddsPapi, forward collector built, **off until `ODDSPAPI_COLLECT_ENABLED=1`** (5.11). No historical ROI/CLV backtest |
+| 4 Parlays + sizing | Built | Correlations, Monte Carlo, beam search, Kelly (Phase 4 progress); NFL parlay builder priced by the model, with user-typed book prices (5.10) |
+| 5 Frontend | Built | Builder, Schedule, Replay, Tracker, Model performance. Data Sources and Settings pages not built |
+| 6 NFL | Mostly built | nflverse data, weather, features, models, Schedule week picker, NFL Builder, Replay (5.10). NGS, FTN, participation, Sleeper NFL not used |
+| 7 Polish | Partly built | launchd jobs instead of a compose scheduler (see Scheduled jobs below). No LLM features or loss limits |
+
+**Scheduled jobs** (macOS launchd, `scripts/`; Docker Desktop must be running):
+
+| When (ET) | Job | Does |
+|---|---|---|
+| Daily 10:00 | `daily_odds_job.sh` | NBA injury report and Sleeper status, schedule projections, predictions log, The Odds API NBA points snapshot |
+| Tuesday 9:00 | `weekly_nfl_job.sh results` | nflverse scores, stats, snaps, injuries, depth charts; rebuild `nfl_features`; backup; OddsPapi closing lines for last week's games |
+| Wednesday 9:00 | `weekly_nfl_job.sh lines` | OddsPapi fixtures, player names and opening prop lines for the coming week (plist `com.parlaybuilder.nfllinesjob`, not loaded yet) |
+| Saturday 9:00 | `weekly_nfl_job.sh prep` | nflverse schedule, injuries, depth charts before Sunday |
+
 ---
 
 ## 1. What we're building
@@ -139,7 +160,9 @@ Verify pricing/limits at signup; they change often. Everything below is grouped 
      sports, and the credit guard (`ODDS_API_MONTHLY_CREDIT_BUDGET`, default 450) counts both. NFL odds collection
      is **not enabled** (2026-10-02). Before turning it on, size both leagues' daily pulls together: NBA
      `player_points` alone costs 1 credit per event per day.
-2. **Secondary odds source** (pick one, free tier only) for cross-checking lines and filling gaps: **SportsGameOdds** or **OddsPapi**. Verify at signup that historical player-prop odds are actually included free, not just advertised — see Section 5.7's findings for OddsPapi specifically.
+2. **Secondary odds source: OddsPapi** (free tier, 250 requests/month). The 2026-10-05 probe confirmed its free
+   `/historical-odds` carries NFL player-prop snapshots from the opening line to kickoff for FanDuel, DraftKings and
+   Hard Rock Bet. It is used for NFL only (Section 5.11) and has its own request guard, separate from The Odds API's.
 3. **Odds snapshot store:** save every pull with a timestamp. This enables:
    - Line-movement charts in the UI
    - **Closing line value (CLV)** tracking: did the model's picks beat the closing line? That's the best early indicator the model has real edge, long before win/loss results are statistically meaningful. Requires paid historical odds (not available on the free tier — see above); the free-tier interim is the paper-trading log.
@@ -308,9 +331,9 @@ the raw Sleeper-wide rate, which is dominated by G-League/2-way noise):
 `nba_player_games` — every near-miss the fuzzy matcher declined to match
 is a genuinely different person, not a missed real player.
 
-Not yet built: opponent-defense-vs-position, usage/tracking, referee
-features, PRA and steals+blocks (rebounds, assists, and 3PM are built — see
-5.7), and the correlation-aware parlay search (Section 6-8).
+Not yet built (NBA): opponent-defense-vs-position, usage/tracking, referee
+features, PRA and steals+blocks. Rebounds, assists and 3PM are built (5.7);
+the correlation-aware parlay search is built (Phase 4 progress).
 
 ### 5.7 Phase 2 continued: more markets, free calibration, and odds collection
 
@@ -347,7 +370,9 @@ mean (Section 5.6) was near-perfect — a good illustration of why
 calibration has to be checked against the actual line being bet, not just
 against the model's own output.
 
-**OddsPapi (free tier) — researched, not yet built on.** Per the task of
+**OddsPapi (free tier) — researched; superseded.** The account now exists, the
+2026-10-05 probe verified the claims below for NFL, and Section 5.11 builds on
+it. Original research note: Per the task of
 checking whether OddsPapi's free tier really provides historical NBA player
 prop odds before building anything against it: OddsPapi's own published
 claims (their pricing/blog pages) are 250 requests/month free, no credit
@@ -527,15 +552,61 @@ use an empirical standardized-residual distribution, and receptions a Negative B
 out-of-fold residuals. Results are in `reports/nfl_model_performance.json`, with charts in
 `reports/calibration_nfl_*.png`.
 
-**NFL odds collection stays off** (see 3.5: shared 500-credit budget). The UI shows projections only.
+**No NFL odds from The Odds API** (see 3.5: shared 500-credit budget). NFL lines come from OddsPapi instead (5.11).
 
-**UI (projections only).** The Builder's NFL mode says "Projections only, odds not enabled" and builds no parlays.
-The Schedule page's NFL week picker (`backend/predict/nfl_projections.py`) lists each game with projected passing,
+**NFL parlay builder** (`backend/api/nfl_builder.py`, `backend/parlay/nfl_legs.py`, `nfl_search.py`). Legs are
+over-threshold rungs at common sportsbook ladder values ("60+ rushing yards"), priced by the model alone:
+projection → P(over rung) from that market's distribution → isotonic calibration fit out of sample on the
+walk-forward replay → correlation-aware Monte Carlo. With no prices, the search aims each tier at a target hit
+chance inside its band instead of ranking by EV. A user can type a book's line and price per leg in the slip;
+once every leg has a price, the slip shows combined odds, EV and a quarter-Kelly stake. Players listed Out never
+reach the pool; Questionable players are marked "Q". The UI labels it "Untested against real NFL lines."
+
+**Replay page** (`/replay`, `backend/api/replay.py`). For a past NBA date or NFL week, compares out-of-sample
+projections (each season predicted by models trained on earlier seasons only, `nfl_walk_forward_replay`) against
+actual results: miss vs a naive baseline, 25th–75th coverage, bias, biggest misses, and a rolling N-week view.
+Actuals are colored by the direction of the miss. It compares against results, not sportsbook lines, so it is not
+a test of betting edge.
+
+**Weekly jobs.** `scripts/weekly_nfl_job.sh` touches only the NFL warehouse and stops the api container while it
+writes: Saturday `prep` (schedule, injuries, depth charts), Tuesday `results` (scores, stats, snaps, features
+rebuild, backup, then OddsPapi closing lines), Wednesday `lines` (OddsPapi opening lines). Models are never
+retrained by a job.
+
+**UI.** The Schedule page's NFL week picker (`backend/predict/nfl_projections.py`) lists each game with projected passing,
 rushing and receiving yards and receptions, plus 25th–75th percentile ranges, for depth-chart players. The
 projection models train on completed seasons only, so every current-season number is out-of-sample, and final
 games show the actual result next to the projection. Model performance has an NFL section with the baseline table
 and the note that most of the gain is shrinkage. Training reads rows in a fixed order: an unordered table rebuild
 had changed LightGBM's bagging and, with it, small results such as whether isotonic calibration helped.
+
+### 5.11 NFL prop lines from OddsPapi (2026-10-12, built, not yet run live)
+
+`backend/ingest/odds_oddspapi_nfl.py`, FanDuel, DraftKings and Hard Rock Bet only, and only the four modeled
+markets (passing, rushing, receiving yards, receptions; full game). Lines are stored for evaluating projections;
+feature builders never read them.
+
+- **Wednesday** (`wednesday` step): `/fixtures` for the next 7 days, matched to nflverse games by team pair and
+  kickoff, then `/odds` per game. Saves the playerId → name map (`nfl_oddspapi_players`, with the gsis id when the
+  name matches one roster player on either team) and each player's main line as of Wednesday (`nfl_prop_lines`,
+  `kind='open'`). Names have to come from this pull: a finished game's `/odds` has none, and `/historical-odds`
+  never does.
+- **Tuesday** (`tuesday` step, inside the results job): `/historical-odds` for games collected on Wednesday that
+  kicked off 5 h to 10 days ago. Closing line per book, market and player = among lines whose last snapshot at or
+  before kickoff is active on both sides, the one with prices closest to even (`kind='close'`).
+- **Raw cache:** responses filtered to the three books and four markets, gzipped, in
+  `data/raw/oddspapi/nfl/<season>/w<week>/`; reruns read the cache and spend nothing. `/markets` is cached 8 days.
+- **Request guard:** each run reads `request_count` from `GET /account` (one request), adds every request it makes,
+  and stops before reaching `ODDSPAPI_MONTHLY_REQUEST_BUDGET` (default 200 of 250). If the last logged count this
+  month is already at the budget, it doesn't call `/account`. Only the two counts go into `oddspapi_usage_log`; the
+  `/account` body is never written to disk. Nothing is spent without `ODDSPAPI_API_KEY` and
+  `ODDSPAPI_COLLECT_ENABLED=1`.
+- **Expected spend:** Wednesday 3 + one per game, Tuesday 1 + one per game: ~36 requests in a 16-game week, ~155 a
+  month.
+- **Disk per game** (measured on the probe's cached responses): `/odds` ~145 KB, `/historical-odds` ~0.9–2.2 MB
+  (every snapshot of every alternate line is kept), so ~1–2.3 MB a game, ~20–37 MB a week, ~0.4–0.65 GB a season.
+- **Open risk:** if a book hasn't posted a game's props by Wednesday, that game gets no names, so its closing lines
+  can't be tied to players. The probe's Monday pull had props for that night's game but none yet for Sunday's.
 
 ---
 
@@ -706,7 +777,10 @@ Shape & depth:
 - Each game expands to projected minutes, points, rebounds, assists and 3PM per player, with a 25th–75th percentile range from that market's distribution (Normal for points and minutes, Negative Binomial for counts; 3PM uses the naive last-10 mean, per `predictor_choice`). Context: opponent, opponent pace rank, points the opponent allows to the player's position, rest.
 - Inputs are `build_current_form` as of today. Teammates-out is shown as "unknown until injury reports post" and modeled as nobody out. Every projection is labeled **Tentative** with its compute time; results are cached per date in `data/projections/` and recomputed when the cache is from an earlier day. The daily job warms the next game day. The page notes that early-season star projections run low (Section 5.9).
 - Never calls The Odds API. If the game's lines are already in the Builder's slate (built from `odds_snapshots`), show "Lines posted — build parlays", which opens the Builder filtered to that game (`/?game=<id>`); otherwise "Lines not posted yet."
-- NFL: Phase 6 placeholder. When built, NFL uses a week picker from nflverse schedules instead of dates.
+- NFL: week picker from nflverse schedules (`backend/predict/nfl_projections.py`): each game with projected passing, rushing and receiving yards and receptions plus 25th–75th ranges for depth-chart players; finished games show the actual next to the projection. No lines are shown.
+
+**I. Replay** (`/replay`, Section 5.10)
+- Pick a past NBA date or NFL week; projections vs actuals from out-of-sample predictions only, with miss vs naive baseline, range coverage, bias and biggest misses. Not a test of betting edge.
 
 ### 10.5 Motion
 - **One signature moment:** when a parlay is loaded into the slip, legs drop in one after another, then the totals "print" at the bottom of the ticket. ~600ms total.
@@ -782,6 +856,9 @@ parlay-builder/
 ODDS_API_KEY=
 SECONDARY_ODDS_API_KEY=
 ODDS_API_MONTHLY_CREDIT_BUDGET=450   # stop pulling before the free tier's 500/mo cap (Section 5.7)
+ODDSPAPI_API_KEY=
+ODDSPAPI_COLLECT_ENABLED=0           # NFL prop-line collector spends nothing until 1 (Section 5.11)
+ODDSPAPI_MONTHLY_REQUEST_BUDGET=200  # of OddsPapi's 250/mo free tier
 ANTHROPIC_API_KEY=            # optional
 ENABLE_LLM_EXPLANATIONS=false
 ENABLE_LLM_NEWS_FLAGS=false

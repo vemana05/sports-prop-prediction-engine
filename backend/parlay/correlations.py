@@ -46,7 +46,7 @@ def _load_residuals(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     return conn.execute(f"SELECT * FROM {residuals_mod.RESIDUALS_TABLE}").fetchdf()
 
 
-def _pairwise_corr(df: pd.DataFrame, relationship: str) -> dict[tuple[str, str], tuple[float, int]]:
+def _pairwise_corr(df: pd.DataFrame, relationship: str, markets: list[str] = MARKETS) -> dict[tuple[str, str], tuple[float, int]]:
     """Returns {(market_a, market_b): (correlation, n_pairs)} for every
     market pair under the given relationship, built by self-joining the
     residuals table on game_id (and team, for teammate/opponent)."""
@@ -64,8 +64,8 @@ def _pairwise_corr(df: pd.DataFrame, relationship: str) -> dict[tuple[str, str],
     else:
         raise ValueError(relationship)
 
-    for i, market_a in enumerate(MARKETS):
-        for market_b in MARKETS[i:]:
+    for i, market_a in enumerate(markets):
+        for market_b in markets[i:]:
             if market_a == market_b and relationship == "same_player":
                 out[(market_a, market_b)] = (1.0, len(df))
                 continue

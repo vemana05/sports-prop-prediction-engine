@@ -27,6 +27,23 @@ export function ParlayRow({ parlay, selected, onSelect }: { parlay: Parlay; sele
           <p className="text-xs text-muted">model hit</p>
         </div>
       </div>
+      {parlay.american_odds == null ? (
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+          <span className="text-muted">
+            Legs {parlay.legs.map((l) => pct(l.model_p)).join(" · ")}
+          </span>
+          {parlay.fair_american_odds != null && (
+            <span>
+              <span className="text-muted">Fair </span>
+              <span className="num font-semibold">{american(parlay.fair_american_odds)}</span>
+            </span>
+          )}
+          {!!parlay.notes?.length && (
+            <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted">Game script</span>
+          )}
+          <span className="ml-auto text-xs text-muted">Hit chance only · no odds</span>
+        </div>
+      ) : (
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
         <span>
           <span className="text-muted">Pays </span>
@@ -39,8 +56,8 @@ export function ParlayRow({ parlay, selected, onSelect }: { parlay: Parlay; sele
               unreliable
             </span>
           ) : (
-            <span className={cn("num font-semibold", parlay.ev_per_dollar > 0 && "text-safe-ink")}>
-              {evPerDollar(parlay.ev_per_dollar)}
+            <span className={cn("num font-semibold", (parlay.ev_per_dollar ?? 0) > 0 && "text-safe-ink")}>
+              {evPerDollar(parlay.ev_per_dollar ?? 0)}
             </span>
           )}
         </span>
@@ -55,6 +72,7 @@ export function ParlayRow({ parlay, selected, onSelect }: { parlay: Parlay; sele
           )}
         </span>
       </div>
+      )}
     </button>
   );
 }

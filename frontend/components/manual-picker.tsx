@@ -62,7 +62,7 @@ export function ManualPicker({
                 <span className="block truncate font-medium leading-tight">{leg.player_name}</span>
                 <span className="block text-sm">
                   <span className="font-semibold text-accent-ink">{leg.label}</span>
-                  <span className="text-muted"> · {american(leg.american_odds)}</span>
+                  {leg.american_odds != null && <span className="text-muted"> · {american(leg.american_odds)}</span>}
                   {blocked && <span className="text-xs text-muted"> · player already in slip</span>}
                   {!blocked && belowTier && <span className="text-xs text-muted"> · below {tierLabel}'s {pct(tierCfg!.min_leg_prob)}</span>}
                 </span>

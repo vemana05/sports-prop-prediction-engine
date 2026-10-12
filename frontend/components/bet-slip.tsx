@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { useBetMutations } from "@/lib/api";
 import { american, evPerDollar, money, pct } from "@/lib/format";
 import { usePaperMode } from "@/lib/storage";
-import type { League, Leg, Parlay, TierName } from "@/lib/types";
+import type { League, Leg, LegPrice, Parlay, TierName } from "@/lib/types";
 
 const LEG_STAGGER = 0.08;
 
@@ -39,6 +39,8 @@ export function BetSlip({
   busyLegId,
   notice,
   emptyText = "Pick a suggested parlay to load it here.",
+  prices,
+  onPrice,
 }: {
   parlay: Parlay | null;
   tier: TierName;
@@ -48,6 +50,9 @@ export function BetSlip({
   busyLegId?: string | null;
   notice?: SlipNotice | null;
   emptyText?: string;
+  /** NFL: typed book prices keyed by base leg id, and the setter. */
+  prices?: Record<string, LegPrice>;
+  onPrice?: (baseId: string, price: LegPrice | null) => void;
 }) {
   return (
     <section aria-label="Bet slip" className="drop-shadow-none">
@@ -92,6 +97,7 @@ export function BetSlip({
                       className={cn(i > 0 && "border-t border-border pt-4")}
                     >
                       <LegRow leg={leg} league={league} />
+                      {onPrice && <PriceInputs leg={leg} price={prices?.[leg.base_id ?? leg.id]} onChange={(p) => onPrice(leg.base_id ?? leg.id, p)} />}
                       {onLegAction && (
                         <div className="mt-1.5 flex justify-end">
                           <button
@@ -132,6 +138,7 @@ export function BetSlip({
 
 function SlipTotals({ parlay }: { parlay: Parlay }) {
   const correlationShift = parlay.p_hit - parlay.independent_p_hit;
+  const unpriced = parlay.american_odds == null;
   return (
     <div className="px-5 pb-3 pt-2">
       <div className="flex items-end justify-between">
@@ -139,11 +146,25 @@ function SlipTotals({ parlay }: { parlay: Parlay }) {
           <p className="text-xs text-muted">Model hit chance</p>
           <p className="num text-2xl font-bold leading-none">{pct(parlay.p_hit)}</p>
         </div>
-        <div className="text-right">
-          <p className="text-xs text-muted">Book no-vig</p>
-          <p className="num text-xl font-semibold leading-none text-muted">{pct(parlay.no_vig_p ?? parlay.book_p)}</p>
-        </div>
+        {unpriced ? (
+          parlay.fair_american_odds != null && (
+            <div className="text-right">
+              <p className="text-xs text-muted">Fair odds (model)</p>
+              <p className="num text-xl font-semibold leading-none text-muted">{american(parlay.fair_american_odds)}</p>
+            </div>
+          )
+        ) : (
+          <div className="text-right">
+            <p className="text-xs text-muted">Book no-vig</p>
+            <p className="num text-xl font-semibold leading-none text-muted">{pct(parlay.no_vig_p ?? parlay.book_p)}</p>
+          </div>
+        )}
       </div>
+      {parlay.legs.length > 1 && (
+        <p className="mt-1.5 text-xs text-muted">
+          Per leg: {parlay.legs.map((l) => `${l.player_name.split(" ").slice(-1)[0]} ${pct(l.model_p)}`).join(" · ")}
+        </p>
+      )}
       {Math.abs(correlationShift) >= 0.005 && (
         <p className="mt-1 text-xs text-muted">
           {pct(parlay.independent_p_hit)} if the legs were independent; correlation {correlationShift > 0 ? "adds" : "removes"}{" "}
@@ -158,11 +179,21 @@ function SlipTotals({ parlay }: { parlay: Parlay }) {
       {!parlay.in_tier_band && (
         <p className="mt-1 text-xs text-risky-ink">This hit chance is outside the selected tier's range.</p>
       )}
+      <SlipNotes parlay={parlay} />
 
+      {unpriced ? (
+        <p className="mt-4 border-t border-dashed border-border pt-3 text-sm">
+          <span className="font-medium">Hit chance only.</span>{" "}
+          <span className="text-muted">
+            Type the book's odds on {parlay.n_priced ? "the remaining" : "every"} leg
+            {parlay.n_priced ? ` (${parlay.n_priced} of ${parlay.legs.length} priced)` : ""} to see combined odds, EV and a stake.
+          </span>
+        </p>
+      ) : (
       <dl className="mt-4 grid grid-cols-3 gap-2 border-t border-dashed border-border pt-3 text-sm">
         <div>
           <dt className="text-xs text-muted">Odds</dt>
-          <dd className="num text-lg font-semibold">{american(parlay.american_odds)}</dd>
+          <dd className="num text-lg font-semibold">{american(parlay.american_odds!)}</dd>
         </div>
         <div>
           <dt className="text-xs text-muted">EV per $1</dt>
@@ -171,7 +202,7 @@ function SlipTotals({ parlay }: { parlay: Parlay }) {
               unreliable
             </dd>
           ) : (
-            <dd className="num text-lg font-semibold">{evPerDollar(parlay.ev_per_dollar).replace(" per $1", "")}</dd>
+            <dd className="num text-lg font-semibold">{evPerDollar(parlay.ev_per_dollar ?? 0).replace(" per $1", "")}</dd>
           )}
         </div>
         <div className="text-right">
@@ -179,8 +210,14 @@ function SlipTotals({ parlay }: { parlay: Parlay }) {
           <dd className="num text-lg font-semibold">{money(parlay.stake)}</dd>
         </div>
       </dl>
+      )}
+      {!unpriced && parlay.priced && parlay.legs.some((l) => !l.vig_removed) && (
+        <p className="mt-2 text-xs text-muted">
+          Legs with only an over price shrink toward the book's implied probability with the vig still in. Add the under price to remove it.
+        </p>
+      )}
 
-      {parlay.stake > 0 ? (
+      {unpriced ? null : parlay.stake > 0 ? (
         <p className="mt-2 text-xs text-muted">
           Pays {money(parlay.payout)} if it hits{parlay.capped_by_tier ? " · capped at this tier's max stake" : ""}.
         </p>
@@ -211,11 +248,15 @@ function LogBet({ parlay, tier, league }: { parlay: Parlay; tier: TierName; leag
   const { log } = useBetMutations();
   const stake = Number(draft.replace(/[$,\s]/g, ""));
   const valid = Number.isFinite(stake) && stake > 0;
+  // An unpriced NFL parlay can only be paper-traded, at the model's fair odds.
+  const unpriced = parlay.decimal_odds == null;
+  const fair = (p: number) => Math.round(p >= 0.5 ? -100 * p / (1 - p) : 100 * (1 - p) / p);
+  const asPaper = paper || unpriced;
 
   if (logged === parlay.id)
     return (
       <p role="status" className="border-t border-border px-5 py-3 text-sm">
-        <span className="font-medium">{paper ? "Paper bet logged." : "Bet logged."}</span>{" "}
+        <span className="font-medium">{asPaper ? "Paper bet logged." : "Bet logged."}</span>{" "}
         <Link href="/tracker" className="text-accent-ink underline-offset-2 hover:underline">Open tracker</Link>
       </p>
     );
@@ -232,7 +273,7 @@ function LogBet({ parlay, tier, league }: { parlay: Parlay; tier: TierName; leag
             setOpen(true);
           }}
         >
-          {paper ? "Log paper bet" : "Log bet"}
+          {asPaper ? "Log paper bet" : "Log bet"}
         </Button>
       </div>
     );
@@ -247,13 +288,13 @@ function LogBet({ parlay, tier, league }: { parlay: Parlay; tier: TierName; leag
           {
             league,
             tier,
-            name: parlay.name,
-            legs: parlay.legs.map((l) => ({ player_name: l.player_name, label: l.label, american_odds: l.american_odds })),
-            decimal_odds: parlay.decimal_odds,
-            american_odds: parlay.american_odds,
+            name: unpriced ? `${parlay.name} (fair odds, no book price)` : parlay.name,
+            legs: parlay.legs.map((l) => ({ player_name: l.player_name, label: l.label, american_odds: l.american_odds ?? fair(l.model_p) })),
+            decimal_odds: parlay.decimal_odds ?? 1 / parlay.p_hit,
+            american_odds: parlay.american_odds ?? parlay.fair_american_odds ?? fair(parlay.p_hit),
             model_p: parlay.p_hit,
             stake,
-            paper,
+            paper: asPaper,
           },
           { onSuccess: () => { setLogged(parlay.id); setOpen(false); } },
         );
@@ -275,17 +316,75 @@ function LogBet({ parlay, tier, league }: { parlay: Parlay; tier: TierName; leag
         </div>
       </div>
       <label className="flex items-center gap-2 text-xs">
-        <input type="checkbox" checked={paper} onChange={(e) => setPaper(e.target.checked)} className="h-4 w-4 accent-[var(--accent)]" />
+        <input type="checkbox" checked={asPaper} disabled={unpriced} onChange={(e) => setPaper(e.target.checked)} className="h-4 w-4 accent-[var(--accent)]" />
         Paper trade (no real money)
       </label>
+      {unpriced && <p className="text-xs text-muted">No book odds typed, so this logs as a paper bet at the model's fair odds.</p>}
       {parlay.stake === 0 && <p className="text-xs text-muted">The model suggests $0 here. Logging it anyway is your call.</p>}
       {log.error && <p className="text-xs text-danger-ink">{(log.error as Error).message}</p>}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>Cancel</Button>
         <Button type="submit" variant="primary" size="sm" disabled={!valid || log.isPending}>
-          {paper ? "Log paper bet" : "Log bet"}
+          {asPaper ? "Log paper bet" : "Log bet"}
         </Button>
       </div>
+    </form>
+  );
+}
+
+function SlipNotes({ parlay }: { parlay: Parlay }) {
+  const items = [...(parlay.notes ?? []).map((t) => ({ t, warn: false })), ...(parlay.warnings ?? []).map((t) => ({ t, warn: true }))];
+  if (!items.length) return null;
+  return (
+    <ul className="mt-2 space-y-1.5">
+      {items.map(({ t, warn }) => (
+        <li key={t} className={cn("rounded-control border px-2.5 py-1.5 text-xs", warn ? "border-risky/50 bg-risky/10" : "border-border bg-panel-2")}>
+          {t}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+const parseAmerican = (s: string): number | undefined => {
+  const v = Number(s.trim().replace(/^\+/, ""));
+  return Number.isFinite(v) && Math.abs(v) >= 100 ? v : undefined;
+};
+
+/** NFL: type the book's line and American odds for one leg. Applied on blur / Enter. */
+function PriceInputs({ leg, price, onChange }: { leg: Leg; price?: LegPrice; onChange: (p: LegPrice | null) => void }) {
+  const [line, setLine] = useState(price?.line ?? "");
+  const [over, setOver] = useState(price?.over != null ? String(price.over) : "");
+  const [under, setUnder] = useState(price?.under != null ? String(price.under) : "");
+  const bad = (s: string) => s.trim() !== "" && parseAmerican(s) === undefined;
+  const commit = () => {
+    if (bad(over) || bad(under)) return;
+    const next: LegPrice = {};
+    if (line.trim()) next.line = line.trim();
+    if (over.trim()) next.over = parseAmerican(over);
+    if (under.trim()) next.under = parseAmerican(under);
+    onChange(Object.keys(next).length ? next : null);
+  };
+  const field = "num h-7 w-full rounded-control border border-border bg-surface px-1.5 text-xs outline-none placeholder:text-muted/40 focus:border-ink aria-[invalid=true]:border-danger";
+  return (
+    <form
+      className="mt-2 grid grid-cols-3 gap-1.5"
+      onSubmit={(e) => { e.preventDefault(); commit(); }}
+      aria-label={`Book price for ${leg.player_name} ${leg.label}`}
+    >
+      <label className="text-[11px] text-muted">
+        Book line
+        <input className={field} value={line} placeholder={leg.rung != null ? `${leg.rung}+` : String(leg.line)} onChange={(e) => setLine(e.target.value)} onBlur={commit} />
+      </label>
+      <label className="text-[11px] text-muted">
+        Over odds
+        <input className={field} value={over} placeholder="-150" inputMode="numeric" aria-invalid={bad(over)} onChange={(e) => setOver(e.target.value)} onBlur={commit} />
+      </label>
+      <label className="text-[11px] text-muted">
+        Under (opt.)
+        <input className={field} value={under} placeholder="+120" inputMode="numeric" aria-invalid={bad(under)} onChange={(e) => setUnder(e.target.value)} onBlur={commit} />
+      </label>
+      <button type="submit" className="sr-only">Apply</button>
     </form>
   );
 }

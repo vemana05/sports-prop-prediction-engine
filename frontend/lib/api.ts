@@ -4,6 +4,7 @@ import type {
   BetResult,
   League,
   Leg,
+  LegPrice,
   Parlay,
   ParlaysResponse,
   Performance,
@@ -57,17 +58,20 @@ function filterQuery({ sides, vetoed, excludedGames }: PoolFilters) {
 export const useTiers = () =>
   useQuery({ queryKey: ["tiers"], queryFn: () => get<Record<TierName, TierConfig>>("/api/tiers"), staleTime: Infinity });
 
-export const useSlate = (league: League) =>
+const weekParam = (league: League, week: number | null | undefined) => (league === "nfl" && week ? `&week=${week}` : "");
+
+export const useSlate = (league: League, week?: number | null) =>
   useQuery({
-    queryKey: ["slate", league],
-    queryFn: () => get<SlateInfo>(`/api/slate?league=${league}`),
+    queryKey: ["slate", league, league === "nfl" ? week ?? null : null],
+    queryFn: () => get<SlateInfo>(`/api/slate?league=${league}${weekParam(league, week)}`),
     refetchInterval: pollWhileWarming,
   });
 
-export const useParlays = (league: League, tier: TierName, bankroll: number, filters: PoolFilters) =>
+export const useParlays = (league: League, tier: TierName, bankroll: number, filters: PoolFilters, week?: number | null) =>
   useQuery({
-    queryKey: ["parlays", league, tier, bankroll, filters],
-    queryFn: () => get<ParlaysResponse>(`/api/parlays?league=${league}&tier=${tier}&bankroll=${bankroll}&${filterQuery(filters)}`),
+    queryKey: ["parlays", league, tier, bankroll, filters, league === "nfl" ? week ?? null : null],
+    queryFn: () =>
+      get<ParlaysResponse>(`/api/parlays?league=${league}&tier=${tier}&bankroll=${bankroll}&${filterQuery(filters)}${weekParam(league, week)}`),
     placeholderData: keepPreviousData,
     refetchInterval: pollWhileWarming,
   });
@@ -81,7 +85,14 @@ export const useLegs = (league: League, filters: PoolFilters, enabled: boolean) 
     enabled,
   });
 
-export const replaceLeg = (body: {
+/** NFL fields: `week`, and typed `prices` keyed by base leg id. */
+interface NflBody {
+  league?: League;
+  week?: number | null;
+  prices?: Record<string, LegPrice>;
+}
+
+export const replaceLeg = (body: NflBody & {
   leg_ids: string[];
   veto_id: string;
   tier: TierName;
@@ -92,7 +103,7 @@ export const replaceLeg = (body: {
   name: string;
 }) => send<ReplaceResponse>("POST", "/api/parlay/replace", body);
 
-export const scoreParlay = (body: { leg_ids: string[]; tier: TierName; bankroll: number }) =>
+export const scoreParlay = (body: NflBody & { leg_ids: string[]; tier: TierName; bankroll: number; name?: string }) =>
   send<{ parlay: Parlay }>("POST", "/api/parlay/score", body);
 
 export const usePerformance = () =>

@@ -19,7 +19,7 @@ import { replaceLeg, scoreParlay, useLegs, useParlays, useSlate, useTiers, type 
 import { clockTime, money, pct, slateDate } from "@/lib/format";
 import { useStored } from "@/lib/storage";
 import { cn } from "@/lib/utils";
-import type { GameInfo, League, Leg, Parlay, SearchReport, Sides, SlateInfo, TierConfig, TierName } from "@/lib/types";
+import type { GameInfo, League, Leg, LegPrice, Parlay, SearchReport, Sides, SlateInfo, TierConfig, TierName } from "@/lib/types";
 
 const DEFAULT_BANKROLL = 500;
 
@@ -48,6 +48,8 @@ interface Veto {
 }
 
 const legLabel = (l: Leg) => `${l.player_name} ${l.label}`;
+/** NFL legs carry a base id that survives a typed line override; NBA legs don't need one. */
+const baseId = (l: Leg) => l.base_id ?? l.id;
 
 export function Builder() {
   const [league, setLeague] = usePersisted<League>("league", "nba", (r) => (r === "nfl" || r === "nba" ? r : undefined));
@@ -69,6 +71,10 @@ export function Builder() {
   const [mode, setMode] = useState<"suggested" | "manual">("suggested");
   const [picked, setPicked] = useState<string[]>([]);
 
+  // NFL: chosen week (null = server default) and book prices typed into the slip, keyed by base leg id.
+  const [week, setWeek] = useState<number | null>(null);
+  const [prices, setPrices] = useState<Record<string, LegPrice>>({});
+
   // `?league=` (set by the layout's init script) wins over the saved league on first load.
   useEffect(() => {
     const fromDom = document.documentElement.dataset.league;
@@ -81,8 +87,9 @@ export function Builder() {
 
   const filters: PoolFilters = { sides, vetoed: vetoes.map((v) => v.id), excludedGames };
   const tiers = useTiers();
-  const slate = useSlate(league);
-  const parlaysQuery = useParlays(league, tier, bankroll, filters);
+  const slate = useSlate(league, week);
+  const parlaysQuery = useParlays(league, tier, bankroll, filters, week);
+  const nflWeek = league === "nfl" ? week ?? slate.data?.week ?? null : null;
 
   // `?game=<id>` (from the Schedule page's "Lines posted" button): show only that game.
   const [gameParamApplied, setGameParamApplied] = useState(false);
@@ -107,8 +114,27 @@ export function Builder() {
 
   const parlays = data?.parlays ?? [];
   const suggested = parlays.find((p) => p.id === selectedId) ?? parlays[0] ?? null;
-  const slipParlay =
+  const baseSlip =
     mode === "manual" ? (picked.length ? manualQuery.data ?? null : null) : history.length ? edited : suggested;
+
+  // NFL: re-score the slip whenever a typed line or price applies to one of its legs.
+  const slipIds = baseSlip?.legs.map(baseId) ?? [];
+  const slipPrices = Object.fromEntries(slipIds.filter((id) => prices[id]).map((id) => [id, prices[id]]));
+  const hasPrices = league === "nfl" && Object.keys(slipPrices).length > 0;
+  const pricedQuery = useQuery({
+    queryKey: ["nfl-score", slipIds, slipPrices, tier, bankroll, nflWeek],
+    queryFn: () =>
+      scoreParlay({ league: "nfl", week: nflWeek, prices: slipPrices, leg_ids: slipIds, tier, bankroll, name: baseSlip!.name }).then((r) => r.parlay),
+    enabled: hasPrices && !!baseSlip,
+    placeholderData: (prev) => prev,
+  });
+  const slipParlay = hasPrices ? pricedQuery.data ?? baseSlip : baseSlip;
+  const setPrice = (id: string, price: LegPrice | null) => {
+    const next = { ...prices };
+    if (price) next[id] = price;
+    else delete next[id];
+    setPrices(next);
+  };
 
   const resetEdits = () => {
     setEdited(null);
@@ -128,12 +154,16 @@ export function Builder() {
 
   const veto = async (leg: Leg) => {
     if (!slipParlay) return;
+    const id = baseId(leg);
     setBusyLegId(leg.id);
-    const vetoed = [...filters.vetoed, leg.id];
+    const vetoed = [...filters.vetoed, id];
     try {
       const res = await replaceLeg({
-        leg_ids: slipParlay.legs.map((l) => l.id),
-        veto_id: leg.id,
+        league,
+        week: nflWeek,
+        prices: league === "nfl" ? slipPrices : undefined,
+        leg_ids: slipParlay.legs.map(baseId),
+        veto_id: id,
         tier,
         sides,
         vetoed,
@@ -141,17 +171,17 @@ export function Builder() {
         bankroll,
         name: slipParlay.name,
       });
-      setVetoes([...vetoes, { id: leg.id, label: legLabel(leg) }]);
-      setHistory([...history, { vetoId: leg.id, prev: slipParlay }]);
+      setVetoes([...vetoes, { id, label: legLabel(leg) }]);
+      setHistory([...history, { vetoId: id, prev: baseSlip }]);
       setEdited(res.parlay);
       setNotice(
         res.added && res.parlay
           ? {
               tone: "info",
               text: `Vetoed ${legLabel(leg)}. Swapped in ${legLabel(res.added)} — hit chance ${pct(slipParlay.p_hit)} → ${pct(res.parlay.p_hit)}.`,
-              vetoId: leg.id,
+              vetoId: id,
             }
-          : { tone: "warn", text: `Vetoed ${legLabel(leg)}. ${res.message ?? ""}`, vetoId: leg.id },
+          : { tone: "warn", text: `Vetoed ${legLabel(leg)}. ${res.message ?? ""}`, vetoId: id },
       );
     } catch (e) {
       setNotice({ tone: "warn", text: `Couldn't veto that leg: ${(e as Error).message}` });
@@ -175,7 +205,11 @@ export function Builder() {
         ? manualQuery.error
           ? { tone: "warn" as const, text: (manualQuery.error as Error).message }
           : null
-        : notice && { tone: notice.tone, text: notice.text, onUndo: notice.vetoId ? () => undoVeto(notice.vetoId!) : undefined },
+        : hasPrices && pricedQuery.error
+          ? { tone: "warn" as const, text: `Couldn't apply those odds: ${(pricedQuery.error as Error).message}` }
+          : notice && { tone: notice.tone, text: notice.text, onUndo: notice.vetoId ? () => undoVeto(notice.vetoId!) : undefined },
+    prices: league === "nfl" ? prices : undefined,
+    onPrice: league === "nfl" ? setPrice : undefined,
     legAction: mode === "manual" ? ("remove" as const) : ("veto" as const),
     onLegAction: mode === "manual" ? (l: Leg) => setPicked(picked.filter((id) => id !== l.id)) : veto,
     busyLegId,
@@ -185,7 +219,7 @@ export function Builder() {
   return (
     <div className="mx-auto max-w-[1600px] px-4 pb-28 pt-4 lg:px-6 lg:pb-10">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-border pb-4">
-        <LeagueToggle value={league} onChange={(l) => { setLeague(l); setSelectedId(null); resetEdits(); }} />
+        <LeagueToggle value={league} onChange={(l) => { setLeague(l); setSelectedId(null); setExcludedGames([]); resetEdits(); }} />
         <SlateSummary league={league} slate={slate.data} />
         <div className="ml-auto">
           <BankrollInput value={bankroll} onChange={setBankroll} />
@@ -198,11 +232,19 @@ export function Builder() {
             <h2 className="mb-2 text-sm font-medium text-muted">Tier</h2>
             <TierSelector value={tier} onChange={switchTier} tiers={tiers.data} />
           </section>
-          <section>
-            <h2 className="mb-2 text-sm font-medium text-muted">Over / under</h2>
-            <SideSelector value={sides} onChange={(s) => { setSides(s); setSelectedId(null); resetEdits(); }} />
-          </section>
-          {league === "nba" && <Filters
+          {league === "nfl" ? (
+            <WeekPicker
+              slate={slate.data}
+              onChange={(w) => { setWeek(w); setSelectedId(null); setExcludedGames([]); setPrices({}); resetEdits(); }}
+            />
+          ) : (
+            <section>
+              <h2 className="mb-2 text-sm font-medium text-muted">Over / under</h2>
+              <SideSelector value={sides} onChange={(s) => { setSides(s); setSelectedId(null); resetEdits(); }} />
+            </section>
+          )}
+          <Filters
+            league={league}
             games={slate.data?.games ?? []}
             excluded={excludedGames}
             onToggle={(id) => {
@@ -210,7 +252,7 @@ export function Builder() {
               setSelectedId(null);
               resetEdits();
             }}
-          />}
+          />
           <VetoList vetoes={vetoes} onUndo={undoVeto} onClear={() => { setVetoes([]); resetEdits(); }} />
         </aside>
 
@@ -230,6 +272,7 @@ export function Builder() {
             )}
           </div>
           <CourtDivider league={league} />
+          {league === "nfl" && slate.data?.status === "ready" && <NflBanner slate={slate.data} />}
 
           {mode === "manual" ? (
             <>
@@ -291,8 +334,12 @@ export function Builder() {
               </div>
 
               <div className="mt-6 flex flex-wrap items-center gap-3">
-                <Button onClick={() => setMode("manual")} disabled={data?.status !== "ready"}>Build my own</Button>
-                <span className="text-sm text-muted">Pick your own legs and score them with the same engine.</span>
+                <Button onClick={() => setMode("manual")} disabled={data?.status !== "ready" || league === "nfl"}>Build my own</Button>
+                <span className="text-sm text-muted">
+                  {league === "nfl"
+                    ? "Not available for NFL yet. Veto legs in a suggestion to reshape it."
+                    : "Pick your own legs and score them with the same engine."}
+                </span>
               </div>
             </>
           )}
@@ -313,7 +360,17 @@ export function Builder() {
 function SlateSummary({ league, slate }: { league: League; slate?: SlateInfo }) {
   if (!slate || slate.status === "warming" || slate.status === "idle")
     return <Skeleton className="h-5 w-56" aria-label="Loading slate" />;
-  if (slate.status === "unavailable") return <span className="text-sm text-muted">NFL: projections only, odds not enabled</span>;
+  if (slate.status === "unavailable") return <span className="text-sm text-muted">{slate.message ?? "Not available"}</span>;
+  if (league === "nfl")
+    return (
+      <div className="flex flex-wrap items-baseline gap-x-3">
+        <span className="font-medium">
+          {slate.season} Week {slate.week} · <span className="num text-lg font-semibold">{slate.n_games}</span>{" "}
+          {slate.n_games === 1 ? "game" : "games"} left
+        </span>
+        <span className="text-xs text-muted">Model-only ladder legs · no odds collected</span>
+      </div>
+    );
   if (slate.status === "error") return <span className="text-sm text-danger-ink">Slate failed to build</span>;
   if (!slate.n_games)
     return <span className="text-sm text-muted">No {league.toUpperCase()} games with odds yet</span>;
@@ -335,7 +392,7 @@ function SlateSummary({ league, slate }: { league: League; slate?: SlateInfo }) 
   );
 }
 
-function Filters({ games, excluded, onToggle }: { games: GameInfo[]; excluded: string[]; onToggle: (id: string) => void }) {
+function Filters({ league, games, excluded, onToggle }: { league: League; games: GameInfo[]; excluded: string[]; onToggle: (id: string) => void }) {
   return (
     <section className="hidden md:block">
       <h2 className="mb-2 text-sm font-medium text-muted">Games</h2>
@@ -352,7 +409,7 @@ function Filters({ games, excluded, onToggle }: { games: GameInfo[]; excluded: s
                   onChange={() => onToggle(g.game_id)}
                   className="h-4 w-4 rounded accent-[var(--accent)]"
                 />
-                <span className="font-medium">{g.teams.join(" · ") || "Unmatched game"}</span>
+                <span className="font-medium">{(league === "nfl" ? g.teams.join(" @ ") : g.teams.join(" · ")) || "Unmatched game"}</span>
                 {g.tip_utc && <span className="ml-auto text-xs text-muted">{clockTime(g.tip_utc)}</span>}
               </label>
             </li>
@@ -360,9 +417,62 @@ function Filters({ games, excluded, onToggle }: { games: GameInfo[]; excluded: s
         </ul>
       )}
       <h2 className="mb-1 mt-5 text-sm font-medium text-muted">Markets</h2>
-      <p className="text-sm">Points</p>
-      <p className="text-xs text-muted">Rebounds, assists and 3PM unlock once their odds are collected.</p>
+      {league === "nfl" ? (
+        <>
+          <p className="text-sm">Passing, rushing &amp; receiving yards, receptions</p>
+          <p className="text-xs text-muted">Over legs at common ladder rungs (e.g. 60+ rush yds). Players listed Out are excluded.</p>
+        </>
+      ) : (
+        <>
+          <p className="text-sm">Points</p>
+          <p className="text-xs text-muted">Rebounds, assists and 3PM unlock once their odds are collected.</p>
+        </>
+      )}
     </section>
+  );
+}
+
+function WeekPicker({ slate, onChange }: { slate?: SlateInfo; onChange: (w: number) => void }) {
+  const now = Date.now();
+  const weeks = (slate?.weeks ?? []).filter((w) => w.last_kickoff_utc && new Date(w.last_kickoff_utc).getTime() > now);
+  return (
+    <section>
+      <h2 className="mb-2 text-sm font-medium text-muted">Week</h2>
+      {!slate?.week ? (
+        <Skeleton className="h-9 w-full" />
+      ) : (
+        <select
+          aria-label="NFL week"
+          className="h-9 w-full rounded-control border border-border bg-panel px-2 text-sm"
+          value={slate.week}
+          onChange={(e) => onChange(Number(e.target.value))}
+        >
+          {weeks.map((w) => (
+            <option key={w.week} value={w.week}>
+              {w.label}
+              {w.n_final ? ` (${w.n_games - w.n_final} left)` : ""}
+            </option>
+          ))}
+        </select>
+      )}
+      <p className="mt-1.5 text-xs text-muted">Only games that haven't kicked off.</p>
+    </section>
+  );
+}
+
+function NflBanner({ slate }: { slate: SlateInfo }) {
+  return (
+    <div role="note" className="mb-3 rounded-control border border-risky/50 bg-risky/10 px-3 py-2 text-sm">
+      <p>
+        <span className="font-semibold text-risky-ink">Untested against real NFL lines. </span>
+        {slate.untested_note}
+      </p>
+      <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-muted">
+        <li>No odds are collected for NFL: you'll see hit chance only. Type a book's line and odds on each leg in the slip to get combined odds, EV and a stake.</li>
+        {!slate.injuries_posted && <li>This week's injury report isn't posted yet, so nobody is excluded as Out.</li>}
+        {slate.calibrated === false && <li>Calibration isn't built yet: probabilities are uncalibrated.</li>}
+      </ul>
+    </div>
   );
 }
 

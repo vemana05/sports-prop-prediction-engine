@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.parlaybuilder.nfllinesjob</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/vemana/Projects/BettingApp/scripts/weekly_nfl_job.sh</string>
+        <string>lines</string>
+    </array>
+
+    <!-- Wednesdays 9:00 AM Eastern (this Mac's timezone): pulls the coming
+         week's OddsPapi fixtures, player names and opening prop lines before
+         Thursday Night Football. Weekday 3 is Wednesday. Runs `lines` mode of
+         the same script as the Saturday job. Spends nothing unless
+         ODDSPAPI_COLLECT_ENABLED=1 in .env. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>3</integer>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/vemana/Projects/BettingApp/logs/launchd_nfl_lines_stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/vemana/Projects/BettingApp/logs/launchd_nfl_lines_stderr.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

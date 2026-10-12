@@ -7,6 +7,10 @@ that fold's own spread (fit on out-of-fold residuals inside those training
 seasons) — the same thing the live NFL projections show. Baseline is the
 player's last-5 average, as in nfl_market_model.baseline_report.
 
+Each fold's spread is also pickled to SPREADS_PATH ({market: {season:
+Spread}}) so the NFL ladder calibrators (parlay/nfl_legs.py) can turn
+these rows into out-of-sample P(over rung) without retraining anything.
+
 Cached to `nfl_walk_forward_replay` in the NFL warehouse because the walk
 forward retrains every fold (a few minutes). Rebuild after new weeks are
 ingested and nfl_features is rebuilt:
@@ -16,6 +20,9 @@ ingested and nfl_features is rebuilt:
 
 from __future__ import annotations
 
+import pickle
+from pathlib import Path
+
 import pandas as pd
 
 from backend.ingest.util import IngestResult, logger, utcnow
@@ -24,6 +31,7 @@ from backend.nfl_db import get_nfl_connection
 from backend.predict.nfl_projections import Q_HI, Q_LO, quantiles
 
 REPLAY_TABLE = "nfl_walk_forward_replay"
+SPREADS_PATH = Path("data/models/nfl_replay_spreads.pkl")
 
 _SCHEMA = f"""
 CREATE OR REPLACE TABLE {REPLAY_TABLE} (
@@ -48,13 +56,14 @@ CREATE OR REPLACE TABLE {REPLAY_TABLE} (
 """
 
 
-def _frames() -> pd.DataFrame:
+def _frames() -> tuple[pd.DataFrame, dict]:
     conn = get_nfl_connection(read_only=True)
     try:
         ids = conn.execute("SELECT player_id, game_id, team, opponent, kickoff_utc FROM nfl_features").fetchdf()
-        frames = []
+        frames, all_spreads = [], {}
         for market in MARKETS:
             results, spreads = walk_forward(conn, market)
+            all_spreads[market.name] = spreads
             results = results.dropna(subset=[market.target])
             mu = results["predicted_mean"].to_numpy(float)
             lo, hi = mu.copy(), mu.copy()
@@ -71,11 +80,11 @@ def _frames() -> pd.DataFrame:
             logger.info("nfl_replay: %s %d rows", market.name, len(results))
     finally:
         conn.close()
-    return pd.concat(frames, ignore_index=True).merge(ids, on=["player_id", "game_id"], how="left")
+    return pd.concat(frames, ignore_index=True).merge(ids, on=["player_id", "game_id"], how="left"), all_spreads
 
 
 def build() -> IngestResult:
-    df = _frames()
+    df, spreads = _frames()
     df["ingested_at"] = utcnow()
     conn = get_nfl_connection()
     try:
@@ -85,6 +94,8 @@ def build() -> IngestResult:
         conn.unregister("replay_df")
     finally:
         conn.close()
+    SPREADS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SPREADS_PATH.write_bytes(pickle.dumps(spreads))
     logger.info("nfl_replay: built %d rows", len(df))
     return IngestResult(rows_written=len(df))
 

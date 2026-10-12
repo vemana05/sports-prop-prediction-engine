@@ -1,12 +1,17 @@
 #!/bin/bash
 export PATH="/Users/vemana/.docker/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
-# Weekly NFL refresh into data/nfl_warehouse.duckdb (backend/nfl_db.py), two modes:
+# Weekly NFL refresh into data/nfl_warehouse.duckdb (backend/nfl_db.py), three modes:
 #   prep     (default; Saturday)  schedule, injuries, depth charts before the games
+#   lines    (Wednesday)          OddsPapi: the week's fixtures, player names and
+#                                 opening prop lines (backend/ingest/odds_oddspapi_nfl.py)
 #   results  (Tuesday)            scores, player stats, snap counts, injuries and
 #                                 depth charts for finished games, then rebuilds
-#                                 nfl_features and backs up. Never retrains models.
+#                                 nfl_features and backs up, then OddsPapi closing
+#                                 lines for last week's games. Never retrains models.
 # Separate from daily_odds_job.sh on purpose: it touches only the NFL
-# warehouse, never warehouse.duckdb, and spends no Odds API credits.
+# warehouse, never warehouse.duckdb, and spends no Odds API credits. The
+# OddsPapi steps spend nothing unless ODDSPAPI_API_KEY is set and
+# ODDSPAPI_COLLECT_ENABLED=1 in .env, and stop at 200 of 250 requests/month.
 #
 # Same requirements as the daily job: Docker Desktop running and the Mac
 # awake at the scheduled time (see com.parlaybuilder.weeklynfljob.plist).
@@ -16,7 +21,7 @@ cd "$(dirname "$0")/.."
 
 mkdir -p logs
 MODE="${1:-prep}"
-case "$MODE" in prep|results) ;; *) echo "usage: $0 [prep|results]"; exit 2 ;; esac
+case "$MODE" in prep|lines|results) ;; *) echo "usage: $0 [prep|lines|results]"; exit 2 ;; esac
 LOG_FILE="logs/weekly_nfl_job_${MODE}_$(date +%Y%m%d_%H%M%S).log"
 
 echo "=== weekly_nfl_job ($MODE) starting $(date) ===" | tee -a "$LOG_FILE"
@@ -39,7 +44,11 @@ fi
 YEAR=$(date +%Y)
 if [ "$(date +%-m)" -ge 9 ]; then SEASON=$YEAR; else SEASON=$((YEAR - 1)); fi
 
-if [ "$MODE" = prep ]; then
+if [ "$MODE" = lines ]; then
+    echo "--- OddsPapi: this week's fixtures, names, opening prop lines ---" | tee -a "$LOG_FILE"
+    docker compose run --rm backend python -m backend.ingest.odds_oddspapi_nfl wednesday 2>&1 | tee -a "$LOG_FILE"
+    STATUS=${PIPESTATUS[0]}
+elif [ "$MODE" = prep ]; then
     echo "--- nflverse: schedule, injuries, depth charts (season $SEASON) ---" | tee -a "$LOG_FILE"
     docker compose run --rm backend python -m backend.ingest.nfl_nflverse \
         --stage schedule --stage injuries --stage depth_charts --seasons "$SEASON" 2>&1 | tee -a "$LOG_FILE"
@@ -59,6 +68,11 @@ else
         # season's caches so new actuals show now instead of tomorrow.
         rm -f data/projections/nfl_${SEASON}_w*.json
     fi
+    # Closing prop lines for last week's games. A failure here is logged but
+    # doesn't fail the results job: stats and features are already in.
+    echo "--- OddsPapi: closing prop lines for last week's games ---" | tee -a "$LOG_FILE"
+    docker compose run --rm backend python -m backend.ingest.odds_oddspapi_nfl tuesday 2>&1 | tee -a "$LOG_FILE"
+    [ "${PIPESTATUS[0]}" -eq 0 ] || echo "WARNING: OddsPapi closing-line step failed (see above)" | tee -a "$LOG_FILE"
 fi
 
 echo "=== weekly_nfl_job ($MODE) finished $(date) (exit $STATUS) ===" | tee -a "$LOG_FILE"

@@ -17,9 +17,10 @@ Phase 4 parlay search and Kelly sizing code.
     GET  /api/reports/{file}     calibration charts
     GET/POST /api/bets, PATCH/DELETE /api/bets/{id}   bet tracker
 
-NFL is projections-only: odds aren't collected for NFL (they'd share the
-NBA's 500-credit Odds API budget, spec 3.5), so the parlay routes return
-`status: "unavailable"` for NFL and the Schedule page carries the numbers.
+NFL odds aren't collected (they'd share the NBA's 500-credit Odds API
+budget, spec 3.5). With `league=nfl` the slate/parlay/replace/score routes
+work from model-only ladder legs (api/nfl_builder.py): hit chance always,
+odds/EV/stake only for prices the user types into the slip.
 """
 
 from __future__ import annotations
@@ -35,9 +36,10 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from backend.api import replay as replay_mod, tracker
+from backend.api import nfl_builder, replay as replay_mod, tracker
 from backend.predict import nfl_projections, schedule_projections
 from backend.bankroll.kelly import recommend_stake
+from backend.parlay import nfl_search
 from backend.parlay.monte_carlo import Leg
 from backend.parlay.search import ParlayCandidate, SearchReport, find_replacement, in_tier_range, leg_id, score_parlay
 from backend.api.slate import REFERENCE_BANKROLL, SEARCH_SEED, SLATE, Game, load_tiers
@@ -50,10 +52,14 @@ Sides = Literal["both", "over", "under"]
 REPORTS_DIR = Path("reports")
 
 MARKET_ABBR = {"points": "pts", "rebounds": "reb", "assists": "ast", "fg3m": "3PM"}
-NFL_UNAVAILABLE = (
-    "NFL is projections only: odds aren't enabled for NFL, so there are no lines to build parlays from. "
-    "See the week's projections on the Schedule page."
-)
+NFL_MANUAL_UNAVAILABLE = "Build my own isn't available for NFL yet; veto legs in a suggested parlay instead."
+
+
+def _nfl_pool(week: int | None) -> nfl_builder.WeekPool:
+    try:
+        return nfl_builder.NFL_SLATE.pool(week)
+    except duckdb.IOException:
+        raise HTTPException(503, "The NFL warehouse is busy (a data job is running). Try again in a few seconds.")
 
 
 @app.on_event("startup")
@@ -176,9 +182,9 @@ def tiers() -> dict:
 
 
 @app.get("/api/slate")
-def slate(league: League = "nba") -> dict:
+def slate(league: League = "nba", week: int | None = Query(None, ge=1, le=23)) -> dict:
     if league == "nfl":
-        return {"status": "unavailable", "message": NFL_UNAVAILABLE}
+        return nfl_builder.slate_json(_nfl_pool(week))
     return _slate_json()
 
 
@@ -200,9 +206,19 @@ def parlays(
     sides: Sides = "both",
     veto: list[str] = Query(default=[]),
     exclude: list[str] = Query(default=[]),
+    week: int | None = Query(None, ge=1, le=23),
 ) -> dict:
     if league == "nfl":
-        return {"status": "unavailable", "message": NFL_UNAVAILABLE, "parlays": []}
+        tier_cfg = load_tiers()[tier]
+        wp = _nfl_pool(week)
+        results, report = nfl_builder.NFL_SLATE.search(wp, tier, tier_cfg, *_filters(veto, exclude))
+        return {
+            **nfl_builder.slate_json(wp),
+            "tier": tier,
+            "sides": "over",
+            "report": nfl_builder.report_json(report),
+            "parlays": [nfl_builder.parlay_json(c, tier_cfg, f"Parlay {chr(ord('A') + i)}") for i, c in enumerate(results)],
+        }
     if SLATE.status != "ready":
         return {**_slate_json(), "parlays": []}
     tier_cfg = load_tiers()[tier]
@@ -224,7 +240,7 @@ def legs(
     exclude: list[str] = Query(default=[]),
 ) -> dict:
     if league == "nfl":
-        return {"status": "unavailable", "message": NFL_UNAVAILABLE, "legs": []}
+        return {"status": "unavailable", "message": NFL_MANUAL_UNAVAILABLE, "legs": []}
     if SLATE.status != "ready":
         return {"status": SLATE.status, "legs": []}
     pool = SLATE.pool(sides, *_filters(veto, exclude))
@@ -243,7 +259,17 @@ def _require_ready() -> None:
         raise HTTPException(503, "The slate is still building. Try again in a few seconds.")
 
 
+class PriceIn(BaseModel):
+    """A sportsbook price typed into the slip for one NFL leg."""
+    line: str | None = None  # "54.5", or "55" / "55+" meaning 55 or more
+    over: float | None = None  # American
+    under: float | None = None  # American, optional; enables the no-vig price
+
+
 class ReplaceRequest(BaseModel):
+    league: League = "nba"
+    week: int | None = None
+    prices: dict[str, PriceIn] = {}  # NFL: keyed by base leg id
     leg_ids: list[str] = Field(min_length=1)
     veto_id: str
     tier: Tier = "risky"
@@ -260,9 +286,11 @@ def replace_leg(req: ReplaceRequest) -> dict:
     side preference, and the one-leg-per-player-prop rule, and re-score.
     If nothing fits, the leg still goes (a veto is a veto) and the parlay
     is re-scored on what's left, with the reason no swap was possible."""
-    _require_ready()
     if req.veto_id not in req.leg_ids:
         raise HTTPException(422, "veto_id must be one of leg_ids")
+    if req.league == "nfl":
+        return _nfl_replace(req)
+    _require_ready()
     tier_cfg = load_tiers()[req.tier]
     current = _lookup(req.leg_ids)
     vetoed_leg = SLATE.legs_by_id.get(req.veto_id)
@@ -289,7 +317,38 @@ def replace_leg(req: ReplaceRequest) -> dict:
     return {"parlay": _parlay_json(c, req.bankroll, tier_cfg, req.name), "added": None, "message": message}
 
 
+def _nfl_prices(prices: dict[str, PriceIn]) -> dict[str, dict]:
+    return {k: v.model_dump() for k, v in prices.items()}
+
+
+def _nfl_replace(req: ReplaceRequest) -> dict:
+    tier_cfg = load_tiers()[req.tier]
+    wp = _nfl_pool(req.week)
+    prices = _nfl_prices(req.prices)
+    current = nfl_builder.resolve(wp, req.leg_ids, prices)
+    vetoed_leg = wp.legs_by_id[req.veto_id]
+    vetoed = set(req.vetoed) | {req.veto_id}
+    pool = [l for l in wp.legs if leg_id(l) not in vetoed and l.game_id not in set(req.excluded_games)]
+    corr = nfl_builder.NFL_SLATE.corr()
+    replaced, why_not = nfl_search.find_replacement(current, vetoed_leg, pool, req.tier, tier_cfg, corr, req.bankroll, wp.games, seed=SEARCH_SEED)
+    if replaced is not None:
+        new_leg = next(l for l in replaced.legs if (l.base_id or leg_id(l)) not in req.leg_ids)
+        return {"parlay": nfl_builder.parlay_json(replaced, tier_cfg, req.name), "added": nfl_builder.leg_json(new_leg), "message": None}
+    remaining = [l for l in current if (l.base_id or leg_id(l)) != req.veto_id]
+    message = f"No replacement fits: {why_not}"
+    if not remaining:
+        return {"parlay": None, "added": None, "message": message}
+    c = nfl_search.score(remaining, tier_cfg, corr, req.bankroll, wp.games, seed=SEARCH_SEED)
+    if len(remaining) < tier_cfg["legs_min"]:
+        message += f" The parlay now has {len(remaining)} leg{'s' if len(remaining) != 1 else ''}, below {req.tier.capitalize()}'s {tier_cfg['legs_min']}-leg minimum."
+    return {"parlay": nfl_builder.parlay_json(c, tier_cfg, req.name), "added": None, "message": message}
+
+
 class ScoreRequest(BaseModel):
+    league: League = "nba"
+    week: int | None = None
+    prices: dict[str, PriceIn] = {}  # NFL: keyed by base leg id
+    name: str = "Your parlay"
     leg_ids: list[str] = Field(min_length=1, max_length=12)
     tier: Tier = "risky"
     bankroll: float = Field(500.0, gt=0, le=10_000_000)
@@ -298,7 +357,14 @@ class ScoreRequest(BaseModel):
 @app.post("/api/parlay/score")
 def score(req: ScoreRequest) -> dict:
     """Manual mode: the same engine (Monte Carlo, shrink, Kelly, sanity
-    guard) on legs the user picked. Stake is capped at the selected tier."""
+    guard) on legs the user picked. Stake is capped at the selected tier.
+    NFL: re-scores a slip with the user's typed lines/prices applied."""
+    if req.league == "nfl":
+        tier_cfg = load_tiers()[req.tier]
+        wp = _nfl_pool(req.week)
+        legs = nfl_builder.resolve(wp, req.leg_ids, _nfl_prices(req.prices))
+        c = nfl_search.score(legs, tier_cfg, nfl_builder.NFL_SLATE.corr(), req.bankroll, wp.games, seed=SEARCH_SEED)
+        return {"parlay": nfl_builder.parlay_json(c, tier_cfg, req.name)}
     _require_ready()
     chosen = _lookup(req.leg_ids)
     seen = set()

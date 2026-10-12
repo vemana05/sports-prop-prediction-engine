@@ -176,6 +176,64 @@ CREATE TABLE IF NOT EXISTS nfl_weather (
     source          VARCHAR NOT NULL,     -- historical_forecast | forecast
     fetched_at      TIMESTAMP NOT NULL
 );
+
+-- OddsPapi forward collection (backend/ingest/odds_oddspapi_nfl.py). These
+-- are sportsbook lines kept for evaluation against model projections, never
+-- read by feature builders (USE_MARKET_FEATURES is false, Section 5.2).
+--
+-- Request accounting only: request_count / request_limit as read from
+-- GET /account (never its body), plus one row per paid request this
+-- collector made, carrying the running estimate.
+CREATE TABLE IF NOT EXISTS oddspapi_usage_log (
+    called_at       TIMESTAMP NOT NULL,
+    endpoint        VARCHAR NOT NULL,
+    request_count   INTEGER,              -- account count after this call (reported or estimated)
+    request_limit   INTEGER,
+    source          VARCHAR NOT NULL,     -- account | estimate
+    status          VARCHAR NOT NULL,
+    note            VARCHAR
+);
+
+-- One row per OddsPapi fixture we collected, matched to nflverse's game_id.
+CREATE TABLE IF NOT EXISTS nfl_oddspapi_fixtures (
+    fixture_id      VARCHAR PRIMARY KEY,
+    game_id         VARCHAR,
+    season          INTEGER NOT NULL,
+    week            INTEGER NOT NULL,
+    kickoff_utc     TIMESTAMPTZ NOT NULL,
+    home_team       VARCHAR,
+    away_team       VARCHAR,
+    odds_fetched_at TIMESTAMP,            -- Wednesday /odds pull
+    hist_fetched_at TIMESTAMP             -- Tuesday /historical-odds pull
+);
+
+-- OddsPapi playerId -> name, saved from /odds before kickoff (a finished
+-- fixture's /odds no longer carries names, and /historical-odds never does).
+CREATE TABLE IF NOT EXISTS nfl_oddspapi_players (
+    fixture_id      VARCHAR NOT NULL,
+    op_player_id    VARCHAR NOT NULL,
+    player_name     VARCHAR NOT NULL,
+    player_id       VARCHAR,              -- gsis id when the name matches one roster player on either team
+    PRIMARY KEY (fixture_id, op_player_id)
+);
+
+-- One main line per (fixture, book, market, player, kind). kind 'open' is
+-- the line as of the Wednesday /odds pull; 'close' is rebuilt on Tuesday
+-- from /historical-odds as the last pre-kickoff two-sided line.
+CREATE TABLE IF NOT EXISTS nfl_prop_lines (
+    fixture_id      VARCHAR NOT NULL,
+    game_id         VARCHAR,
+    bookmaker       VARCHAR NOT NULL,
+    market          VARCHAR NOT NULL,     -- passing_yards | rushing_yards | receiving_yards | receptions
+    op_player_id    VARCHAR NOT NULL,
+    kind            VARCHAR NOT NULL,     -- open | close
+    line            DOUBLE NOT NULL,
+    over_price      DOUBLE,               -- decimal
+    under_price     DOUBLE,
+    observed_at     TIMESTAMPTZ,
+    fetched_at      TIMESTAMP NOT NULL,
+    PRIMARY KEY (fixture_id, bookmaker, market, op_player_id, kind)
+);
 """
 
 
