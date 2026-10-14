@@ -182,6 +182,48 @@ export interface NflPerformance {
   rows: NflPerformanceRow[];
 }
 
+export interface LinesBucket { lo: number; hi: number; n: number; mean_p: number; hit_rate: number }
+export interface LinesRoi { margin: number; bets: number; wins: number; pushes: number; profit: number; roi: number | null }
+
+export interface LinesSummary {
+  props: number;
+  graded: number;
+  pushes: number;
+  enough_sample: boolean;
+  brier_model: number | null;
+  brier_model_raw: number | null;
+  brier_book: number | null;
+  over_rate: number | null;
+  side_hit_rate: number | null;
+  side_n: number;
+  calibration_model: LinesBucket[];
+  calibration_book: LinesBucket[];
+  roi: LinesRoi[];
+  clv: { n: number; beat: number; same: number; worse: number; beat_rate: number | null; mean_line_move: number | null };
+}
+
+export interface ModelVsLines {
+  available: boolean;
+  as_of?: string;
+  book_rule?: string;
+  match_rule?: string;
+  min_sample?: number;
+  margins?: number[];
+  books_used?: Record<string, number>;
+  names?: {
+    total: number;
+    matched: number;
+    match_rate: number | null;
+    by_method: Record<string, number>;
+    unmatched: { name: string; game_id: string; teams: string; reason: string }[];
+  };
+  coverage?: Record<string, number>;
+  not_graded?: { name: string; player_id: string; game_id: string; market: NflMarket; status: string }[];
+  overall?: LinesSummary;
+  markets?: Record<NflMarket, LinesSummary & { label: string }>;
+  summary?: string[];
+}
+
 export type NflMarket = "passing_yards" | "rushing_yards" | "receiving_yards" | "receptions";
 
 export interface NflProjection {

@@ -490,6 +490,16 @@ def _nfl_performance() -> dict | None:
     return {"test_seasons": raw["test_seasons"], "rows": rows}
 
 
+@app.get("/api/nfl/model-vs-lines")
+def nfl_model_vs_lines() -> dict:
+    """reports/nfl_model_vs_lines.json, rebuilt by the Tuesday results job
+    (backend/backtest/nfl_model_vs_lines.py). available=False until the first run."""
+    path = REPORTS_DIR / "nfl_model_vs_lines.json"
+    if not path.exists():
+        return {"available": False}
+    return {"available": True, **json.loads(path.read_text())}
+
+
 @app.get("/api/reports/{name}")
 def report_file(name: str) -> FileResponse:
     path = REPORTS_DIR / name

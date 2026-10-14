@@ -5,6 +5,7 @@ import type {
   League,
   Leg,
   LegPrice,
+  ModelVsLines,
   Parlay,
   ParlaysResponse,
   Performance,
@@ -109,6 +110,9 @@ export const scoreParlay = (body: NflBody & { leg_ids: string[]; tier: TierName;
 
 export const usePerformance = () =>
   useQuery({ queryKey: ["performance"], queryFn: () => get<Performance>("/api/performance"), staleTime: Infinity });
+
+export const useModelVsLines = () =>
+  useQuery({ queryKey: ["model-vs-lines"], queryFn: () => get<ModelVsLines>("/api/nfl/model-vs-lines"), staleTime: Infinity });
 
 export const useBets = () => useQuery({ queryKey: ["bets"], queryFn: () => get<{ bets: Bet[] }>("/api/bets") });
 

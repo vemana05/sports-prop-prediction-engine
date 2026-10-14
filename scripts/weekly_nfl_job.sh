@@ -15,8 +15,10 @@ export PATH="/Users/vemana/.docker/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 #                                 lines for last week's games, then (only with
 #                                 NFL_WEEKLY_RETRAIN=1 in .env) trains last week's
 #                                 walk-forward NFL models (nfl_<market>_thru<season>w<NN>,
-#                                 older versions kept), rebuilds the Replay table and
-#                                 warms this week's projection cache.
+#                                 older versions kept), rebuilds the Replay table,
+#                                 warms this week's projection cache, and last
+#                                 rebuilds the Model vs. lines report
+#                                 (backend/backtest/nfl_model_vs_lines.py).
 # Separate from daily_odds_job.sh on purpose: it touches only the NFL
 # warehouse, never warehouse.duckdb, and spends no Odds API credits. The
 # OddsPapi steps spend nothing unless ODDSPAPI_API_KEY is set and
@@ -109,6 +111,11 @@ else
     echo "--- OddsPapi: closing prop lines for last week's games ---" | tee -a "$LOG_FILE"
     docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl tuesday 2>&1 | redact | tee -a "$LOG_FILE"
     [ "${PIPESTATUS[0]}" -eq 0 ] || echo "WARNING: OddsPapi closing-line step failed (see above)" | tee -a "$LOG_FILE"
+    # Model vs. lines: logged projections against those closing lines and the
+    # actual stats (reports/nfl_model_vs_lines.json). Local data only; no API calls.
+    echo "--- model vs. closing lines report ---" | tee -a "$LOG_FILE"
+    docker compose run --rm --no-deps api python -m backend.backtest.nfl_model_vs_lines 2>&1 | redact | tee -a "$LOG_FILE"
+    [ "${PIPESTATUS[0]}" -eq 0 ] || echo "WARNING: model vs. lines report failed" | tee -a "$LOG_FILE"
 fi
 
 echo "=== weekly_nfl_job ($MODE) finished $(date) (exit $STATUS) ===" | tee -a "$LOG_FILE"

@@ -10,6 +10,7 @@ const LINKS = [
   { href: "/replay", short: "Replay", long: "Replay" },
   { href: "/tracker", short: "Tracker", long: "Bet tracker" },
   { href: "/performance", short: "Model", long: "Model performance" },
+  { href: "/lines", short: "Lines", long: "Model vs. lines" },
 ];
 
 export function SiteNav() {
