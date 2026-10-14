@@ -33,7 +33,8 @@ plan per week from the schedule and simulates the budget guard, without
 any request or write.
 
 Request budget (same idea as odds_theoddsapi's credit guard): every run
-first reads request_count from GET /account (which itself costs one
+first reads request_count from GET /account (kept on the current
+subscription, subscriptions[].request_count; the call itself costs one
 request), then counts each request it makes on top of that and stops before
 the running total would reach ODDSPAPI_MONTHLY_REQUEST_BUDGET (default 200
 of the free tier's 250). If the last logged count this month is already at
@@ -123,6 +124,32 @@ def last_known_count(conn: duckdb.DuckDBPyConnection, now: datetime) -> int:
     return row[0] if row else 0
 
 
+def account_usage(body: object) -> tuple[int, int | None] | None:
+    """(request_count, request_limit) from a GET /account body, or None.
+    The live body keeps them on the subscription, not the top level:
+    subscriptions[i].request_count for the current_subscription_id (else
+    the active one, else the only one). A top-level pair is still accepted."""
+    if not isinstance(body, dict):
+        return None
+    candidates = [body]
+    subs = [s for s in body.get("subscriptions") or [] if isinstance(s, dict)]
+    current = body.get("current_subscription_id")
+    picked = [s for s in subs if current is not None and s.get("subscription_id") == current] \
+        or [s for s in subs if s.get("is_active")] or (subs if len(subs) == 1 else [])
+    candidates += picked[:1]
+    for src in candidates:
+        try:
+            count = int(src["request_count"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        limit = src.get("request_limit")
+        try:
+            return count, int(limit) if limit is not None else None
+        except (TypeError, ValueError):
+            return count, None
+    return None
+
+
 class Client:
     """All OddsPapi traffic goes through here: one budget check per request,
     cooldowns, and a usage-log row per request. `http_get` and `sleep` are
@@ -145,11 +172,10 @@ class Client:
         if known >= self.budget:
             raise BudgetExhausted(f"last logged count {known} >= budget {self.budget}; /account not called")
         body = self._raw("/account", {})
-        try:
-            self.count = int(body["request_count"])
-            self.limit = int(body["request_limit"]) if body.get("request_limit") is not None else None
-        except (KeyError, TypeError, ValueError):
+        usage = account_usage(body)
+        if usage is None:
             raise BudgetExhausted("/account response had no request_count; stopping to be safe")
+        self.count, self.limit = usage
         # Whether /account counts itself in request_count isn't documented; assume not.
         self.count += 1
         self._log("/account", "account", "success")  # only the two counts are kept

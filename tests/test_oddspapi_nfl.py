@@ -83,6 +83,24 @@ def _conn():
     return conn
 
 
+def _account(count, limit=250):
+    """GET /account in its live shape (redacted sample, 2026-10-14): the
+    counts sit on the subscription, not at the top level."""
+    return {
+        "api_key": "REDACTED", "created_at": "2026-09-01T00:00:00.000000+00:00", "language_code": "en",
+        "language_name": "REDACTED", "email": "secret", "email_verified": True,
+        "current_subscription_id": "sub-REDACTED", "customer_segment": "user",
+        "subscriptions": [{
+            "subscription_id": "sub-REDACTED", "currency": "USD", "price": None,
+            "valid_from": "2026-09-01T00:00:00.000000+00:00", "valid_until": None, "auto_renew": False,
+            "is_active": True, "created_at": "2026-09-01T00:00:00.000000+00:00",
+            "bookmakers": {"fanduel": {"has_live_odds": False, "has_player_props": True}},
+            "sport_ids": [10, 11, 14], "websocket_access": 0,
+            "request_limit": limit, "plan": "free", "request_count": count,
+        }],
+    }
+
+
 class FakeHTTP:
     def __init__(self, account_count=10, odds=ODDS):
         self.calls, self.params = [], []
@@ -93,7 +111,7 @@ class FakeHTTP:
         self.calls.append(path)
         self.params.append(params)
         return Resp({
-            "/account": {"request_count": self.account_count, "request_limit": 250, "last_request": None, "email": "secret"},
+            "/account": _account(self.account_count),
             "/markets": MARKETS,
             "/fixtures": FIXTURES,
             "/odds": self.odds,
@@ -153,6 +171,29 @@ def test_account_at_budget_stops_after_the_account_call():
     result = _run("wednesday", _conn(), http)
     assert "stopped" in result
     assert http.calls == ["/account"]
+
+
+def test_account_usage_reads_the_current_subscription():
+    assert c.account_usage(_account(17)) == (17, 250)
+    # an inactive older subscription is skipped for the current one
+    body = _account(42)
+    body["subscriptions"].insert(0, {"subscription_id": "old", "is_active": False, "request_count": 999})
+    assert c.account_usage(body) == (42, 250)
+    # a top-level pair (the shape the docs implied) still works
+    assert c.account_usage({"request_count": 5, "request_limit": 250}) == (5, 250)
+
+
+def test_account_without_any_count_stops_before_spending_more():
+    body = _account(17)
+    del body["subscriptions"][0]["request_count"]
+    assert c.account_usage(body) is None
+    calls = []
+
+    def get(url, params, timeout):
+        calls.append(url.removeprefix(c.BASE_URL))
+        return Resp(body)
+    r = _run("wednesday", _conn(), get)
+    assert "no request_count" in r["stopped"] and calls == ["/account"]
 
 
 def test_never_passes_budget_mid_run():

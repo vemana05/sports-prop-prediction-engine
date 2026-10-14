@@ -22,6 +22,8 @@ cd "$(dirname "$0")/.."
 
 mkdir -p logs
 LOG_FILE="logs/daily_odds_job_$(date +%Y%m%d_%H%M%S).log"
+# requests puts ?apiKey=... into connection-error URLs; keep keys out of logs.
+redact() { sed -E 's/(apiKey|api_key)=[^&" )]+/\1=REDACTED/g'; }
 
 echo "=== daily_odds_job starting $(date) ===" | tee -a "$LOG_FILE"
 
@@ -38,24 +40,43 @@ if [ -n "$(docker compose ps -q --status running api)" ]; then
     trap 'docker compose start api >>"$LOG_FILE" 2>&1' EXIT
 fi
 
+# After a late wake the Mac can be up with no network for a while (2026-10-14:
+# every call failed DNS for the whole run, and the job exited 1). Wait up to
+# 30 min for the containers to resolve the Odds API host before spending
+# anything; if it never does, fail clearly instead of logging tracebacks.
+echo "--- waiting for network (DNS from inside Docker) ---" | tee -a "$LOG_FILE"
+NET_OK=0
+for i in $(seq 1 30); do
+    if docker compose run --rm --no-deps backend python -c \
+        "import socket; socket.getaddrinfo('api.the-odds-api.com', 443)" >/dev/null 2>&1; then
+        NET_OK=1; break
+    fi
+    echo "no network yet (attempt $i/30); retrying in 60s" | tee -a "$LOG_FILE"
+    sleep 60
+done
+if [ "$NET_OK" -ne 1 ]; then
+    echo "ERROR: no network after 30 min — nothing collected today" | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 # Refresh availability before predicting: log_predictions reads the latest
 # injury report for teammates-out. Failures here are logged, not fatal — a
 # stale report shouldn't stop predictions or odds collection.
 echo "--- refresh: NBA injury report (latest) ---" | tee -a "$LOG_FILE"
-docker compose run --rm backend python -m backend.ingest.injuries_nba_official --latest 2>&1 | tee -a "$LOG_FILE"
+docker compose run --rm backend python -m backend.ingest.injuries_nba_official --latest 2>&1 | redact | tee -a "$LOG_FILE"
 
 echo "--- refresh: Sleeper player status ---" | tee -a "$LOG_FILE"
-docker compose run --rm backend python -m backend.ingest.sleeper 2>&1 | tee -a "$LOG_FILE"
+docker compose run --rm backend python -m backend.ingest.sleeper 2>&1 | redact | tee -a "$LOG_FILE"
 
 echo "--- step 0: warming schedule projections (next game day) ---" | tee -a "$LOG_FILE"
-docker compose run --rm backend python -m backend.predict.schedule_projections 2>&1 | tee -a "$LOG_FILE"
+docker compose run --rm backend python -m backend.predict.schedule_projections 2>&1 | redact | tee -a "$LOG_FILE"
 
 echo "--- step 1/2: logging predictions ---" | tee -a "$LOG_FILE"
-docker compose run --rm backend python -m backend.predict.log_predictions 2>&1 | tee -a "$LOG_FILE"
+docker compose run --rm backend python -m backend.predict.log_predictions 2>&1 | redact | tee -a "$LOG_FILE"
 PREDICT_STATUS=${PIPESTATUS[0]}
 
 echo "--- step 2/2: collecting odds ---" | tee -a "$LOG_FILE"
-docker compose run --rm backend python -m backend.ingest.odds_theoddsapi 2>&1 | tee -a "$LOG_FILE"
+docker compose run --rm backend python -m backend.ingest.odds_theoddsapi 2>&1 | redact | tee -a "$LOG_FILE"
 ODDS_STATUS=${PIPESTATUS[0]}
 
 echo "=== daily_odds_job finished $(date) (predict exit $PREDICT_STATUS, odds exit $ODDS_STATUS) ===" | tee -a "$LOG_FILE"

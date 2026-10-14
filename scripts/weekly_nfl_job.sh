@@ -34,6 +34,8 @@ mkdir -p logs
 MODE="${1:-prep}"
 case "$MODE" in prep|lines|results) ;; *) echo "usage: $0 [prep|lines|results]"; exit 2 ;; esac
 LOG_FILE="logs/weekly_nfl_job_${MODE}_$(date +%Y%m%d_%H%M%S).log"
+# requests puts ?apiKey=... into connection-error URLs; keep keys out of logs.
+redact() { sed -E 's/(apiKey|api_key)=[^&" )]+/\1=REDACTED/g'; }
 
 echo "=== weekly_nfl_job ($MODE) starting $(date) ===" | tee -a "$LOG_FILE"
 
@@ -59,34 +61,34 @@ if [ "$(date +%-m)" -ge 9 ]; then SEASON=$YEAR; else SEASON=$((YEAR - 1)); fi
 # NBA daily job). Never overwritten, so a rerun only adds what's missing.
 log_predictions() {
     echo "--- logging NFL projections for the next 7 days ---" | tee -a "$LOG_FILE"
-    docker compose run --rm --no-deps api python -m backend.predict.log_nfl_predictions 2>&1 | tee -a "$LOG_FILE"
+    docker compose run --rm --no-deps api python -m backend.predict.log_nfl_predictions 2>&1 | redact | tee -a "$LOG_FILE"
     [ "${PIPESTATUS[0]}" -eq 0 ] || echo "WARNING: NFL prediction logging failed" | tee -a "$LOG_FILE"
 }
 
 if [ "$MODE" = lines ]; then
     log_predictions
     echo "--- OddsPapi: this week's fixtures, names, opening prop lines ---" | tee -a "$LOG_FILE"
-    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl wednesday 2>&1 | tee -a "$LOG_FILE"
+    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl wednesday 2>&1 | redact | tee -a "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
 elif [ "$MODE" = prep ]; then
     echo "--- nflverse: schedule, injuries, depth charts (season $SEASON) ---" | tee -a "$LOG_FILE"
     docker compose run --rm backend python -m backend.ingest.nfl_nflverse \
-        --stage schedule --stage injuries --stage depth_charts --seasons "$SEASON" 2>&1 | tee -a "$LOG_FILE"
+        --stage schedule --stage injuries --stage depth_charts --seasons "$SEASON" 2>&1 | redact | tee -a "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
     log_predictions
     echo "--- OddsPapi: retry games with no prop lines on Wednesday ---" | tee -a "$LOG_FILE"
-    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl saturday 2>&1 | tee -a "$LOG_FILE"
+    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl saturday 2>&1 | redact | tee -a "$LOG_FILE"
     [ "${PIPESTATUS[0]}" -eq 0 ] || echo "WARNING: OddsPapi Saturday retry failed (see above)" | tee -a "$LOG_FILE"
 else
     echo "--- nflverse: schedule, player stats, snap counts, injuries, depth charts (season $SEASON) ---" | tee -a "$LOG_FILE"
     docker compose run --rm backend python -m backend.ingest.nfl_nflverse --no-backup \
         --stage schedule --stage player_stats --stage snap_counts --stage injuries --stage depth_charts \
-        --seasons "$SEASON" 2>&1 | tee -a "$LOG_FILE"
+        --seasons "$SEASON" 2>&1 | redact | tee -a "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
     if [ "$STATUS" -eq 0 ]; then
         # Rebuilds features from the warehouse and backs up nfl_warehouse.duckdb.
         echo "--- rebuilding nfl_features + backup ---" | tee -a "$LOG_FILE"
-        docker compose run --rm backend python -m backend.features.nfl_features 2>&1 | tee -a "$LOG_FILE"
+        docker compose run --rm backend python -m backend.features.nfl_features 2>&1 | redact | tee -a "$LOG_FILE"
         STATUS=${PIPESTATUS[0]}
         # The Schedule page caches each week's projections for a day; drop this
         # season's caches so new actuals show now instead of tomorrow.
@@ -95,17 +97,17 @@ else
         # doesn't have to. Runs in the api service for its live-mounted source;
         # `run` doesn't publish ports, so it won't clash with the stopped api.
         echo "--- weekly NFL retrain + projection cache ---" | tee -a "$LOG_FILE"
-        docker compose run --rm --no-deps api python -m backend.predict.nfl_projections --retrain 2>&1 | tee -a "$LOG_FILE"
+        docker compose run --rm --no-deps api python -m backend.predict.nfl_projections --retrain 2>&1 | redact | tee -a "$LOG_FILE"
         [ "${PIPESTATUS[0]}" -eq 0 ] || echo "WARNING: NFL retrain/warm-up failed; the API will train in the background on first request" | tee -a "$LOG_FILE"
         # Replay rows for the new week, projected by the version that existed before it.
         echo "--- rebuilding NFL replay ---" | tee -a "$LOG_FILE"
-        docker compose run --rm --no-deps api python -m backend.backtest.nfl_replay 2>&1 | tee -a "$LOG_FILE"
+        docker compose run --rm --no-deps api python -m backend.backtest.nfl_replay 2>&1 | redact | tee -a "$LOG_FILE"
         [ "${PIPESTATUS[0]}" -eq 0 ] || echo "WARNING: NFL replay rebuild failed" | tee -a "$LOG_FILE"
     fi
     # Closing prop lines for last week's games. A failure here is logged but
     # doesn't fail the results job: stats and features are already in.
     echo "--- OddsPapi: closing prop lines for last week's games ---" | tee -a "$LOG_FILE"
-    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl tuesday 2>&1 | tee -a "$LOG_FILE"
+    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl tuesday 2>&1 | redact | tee -a "$LOG_FILE"
     [ "${PIPESTATUS[0]}" -eq 0 ] || echo "WARNING: OddsPapi closing-line step failed (see above)" | tee -a "$LOG_FILE"
 fi
 
