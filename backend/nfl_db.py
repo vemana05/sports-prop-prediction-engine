@@ -177,6 +177,22 @@ CREATE TABLE IF NOT EXISTS nfl_weather (
     fetched_at      TIMESTAMP NOT NULL
 );
 
+-- Every NFL projection logged before kickoff (backend/predict/log_nfl_predictions.py),
+-- the NFL counterpart of warehouse.duckdb's model_predictions_log: one row
+-- per (game, player, market), never overwritten, so the projection on record
+-- is the earliest one and can't drift toward the line or the result.
+CREATE TABLE IF NOT EXISTS nfl_predictions_log (
+    logged_at       TIMESTAMP NOT NULL,
+    game_id         VARCHAR NOT NULL,
+    player_id       VARCHAR NOT NULL,     -- gsis id
+    market          VARCHAR NOT NULL,     -- passing_yards | rushing_yards | receiving_yards | receptions
+    mean            DOUBLE NOT NULL,
+    lo              DOUBLE,               -- 25th percentile
+    hi              DOUBLE,               -- 75th percentile
+    model_version   VARCHAR NOT NULL,     -- e.g. thru2025
+    PRIMARY KEY (game_id, player_id, market)
+);
+
 -- OddsPapi forward collection (backend/ingest/odds_oddspapi_nfl.py). These
 -- are sportsbook lines kept for evaluation against model projections, never
 -- read by feature builders (USE_MARKET_FEATURES is false, Section 5.2).

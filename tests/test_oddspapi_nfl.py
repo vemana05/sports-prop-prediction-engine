@@ -84,18 +84,19 @@ def _conn():
 
 
 class FakeHTTP:
-    def __init__(self, account_count=10):
-        self.calls = []
-        self.account_count = account_count
+    def __init__(self, account_count=10, odds=ODDS):
+        self.calls, self.params = [], []
+        self.account_count, self.odds = account_count, odds
 
     def __call__(self, url, params, timeout):
         path = url.removeprefix(c.BASE_URL)
         self.calls.append(path)
+        self.params.append(params)
         return Resp({
             "/account": {"request_count": self.account_count, "request_limit": 250, "last_request": None, "email": "secret"},
             "/markets": MARKETS,
             "/fixtures": FIXTURES,
-            "/odds": ODDS,
+            "/odds": self.odds,
             "/historical-odds": HIST,
         }[path])
 
@@ -189,8 +190,10 @@ def test_wednesday_then_tuesday():
     _run("wednesday", conn, http2)
     assert http2.calls == ["/account"]
 
-    # Tuesday before the game is over does nothing; after, it rebuilds the close.
-    assert _run("tuesday", conn, FakeHTTP(), now=KICK + timedelta(hours=1))["games"] == 0
+    # Tuesday before the game is over does nothing (not even /account); after, it rebuilds the close.
+    http_early = FakeHTTP()
+    assert _run("tuesday", conn, http_early, now=KICK + timedelta(hours=1))["games"] == 0
+    assert http_early.calls == []
     http3 = FakeHTTP()
     tue = _run("tuesday", conn, http3, now=KICK + timedelta(days=2))
     assert http3.calls == ["/account", "/historical-odds"] and tue["close_lines"] == 1
@@ -205,3 +208,52 @@ def test_open_prefers_bookmaker_main_line_flag():
     odds["bookmakerOdds"]["fanduel"]["markets"]["100"]["outcomes"]["100"]["players"]["77"]["mainLine"] = True
     rows = c.open_lines(odds, markets)
     assert [(r["line"], r["over_price"]) for r in rows] == [(45.5, 1.70)]
+
+
+def test_only_the_three_books_are_requested():
+    conn, http = _conn(), FakeHTTP()
+    _run("wednesday", conn, http)
+    _run("tuesday", conn, http, now=KICK + timedelta(days=2))
+    for path, params in zip(http.calls, http.params):
+        if path in ("/odds", "/historical-odds"):
+            assert params["bookmakers"] == "fanduel,draftkings,hardrockbet"
+    assert {"/odds", "/historical-odds"} <= set(http.calls)
+
+
+NO_PROPS = {"fixtureId": "fx1", "bookmakerOdds": {"fanduel": {"markets": {}}}}
+
+
+def test_game_without_props_on_wednesday_is_retried_saturday():
+    conn = _conn()
+    wed = _run("wednesday", conn, FakeHTTP(odds=NO_PROPS))
+    assert wed["collected"] == 0 and wed["no_props_yet"] == 1
+    assert not list(c.CACHE_ROOT.rglob("*_odds.json.gz"))  # empty /odds isn't cached
+
+    http = FakeHTTP()
+    sat = _run("saturday", conn, http, now=NOW + timedelta(days=3))
+    assert http.calls == ["/account", "/odds"] and sat["collected"] == 1
+    assert conn.execute("SELECT count(*) FROM nfl_prop_lines WHERE kind = 'open'").fetchone()[0] == 1
+
+    # Nothing left to retry: no requests at all, not even /account.
+    http2 = FakeHTTP()
+    assert _run("saturday", conn, http2, now=NOW + timedelta(days=3))["games"] == 0
+    assert http2.calls == []
+
+
+def test_guard_simulation_stops_at_budget():
+    assert c._guard(0, 200, 19) == (19, 19)
+    assert c._guard(195, 200, 19) == (5, 200)
+    assert c._guard(199, 200, 19) == (1, 200)  # /account only
+    assert c._guard(200, 200, 19) == (0, 200)  # not even /account
+
+
+def test_dry_run_plan_never_passes_budget():
+    conn = _conn()
+    for i in range(1, 16):  # a few weeks of 16-game slates in one month
+        for g in range(16):
+            conn.execute("INSERT INTO nfl_schedule (game_id, season, week, game_type, kickoff_utc, home_team, away_team, ingested_at) "
+                         "VALUES (?, 2026, ?, 'REG', ?, 'H', 'A', now())", [f"g{i}_{g}", 5 + i, KICK + timedelta(weeks=i, minutes=g)])
+    p = c.plan(conn, NOW)
+    assert p["budget"] == 200 and p["bookmakers"] == ["fanduel", "draftkings", "hardrockbet"]
+    assert all(m["end_count"] <= 200 for m in p["months_worst_case"].values())
+    assert any(m["guard_trims"] > 0 for m in p["months_worst_case"].values())

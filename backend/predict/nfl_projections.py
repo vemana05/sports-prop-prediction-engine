@@ -6,8 +6,9 @@ yards and receptions line (only the markets whose pre-game universe he's in;
 see nfl_features.py) with a 25th-75th percentile range from that market's
 own distribution (nfl_market_model.Spread).
 
-Projection-only: NFL odds collection is not enabled (shared 500-credit Odds
-API budget, spec 3.5), and this module never calls The Odds API.
+Projection-only: this module never calls an odds API. NFL lines come from
+OddsPapi (odds_oddspapi_nfl.py, spec 5.11), never from The Odds API (shared
+500-credit budget, spec 3.5), and nothing here reads them.
 
 Week N is projected by the newest saved model trained strictly before it:
 completed seasons plus this season through week N-1 (weekly walk-forward,

@@ -5,21 +5,32 @@ yards, receptions). Writes to data/nfl_warehouse.duckdb, never to
 warehouse.duckdb. Lines are kept for evaluating projections against the
 market; feature builders never read them (USE_MARKET_FEATURES is false).
 
-Two steps, one per scheduled job:
+Three steps, one per scheduled job:
 
   wednesday  GET /fixtures for the coming week's games, then GET /odds per
              game: saves the playerId -> name map (a finished game's /odds
              no longer has names and /historical-odds never does) and the
-             line as of Wednesday ('open').
-  tuesday    GET /historical-odds per game collected on Wednesday that has
-             since kicked off: rebuilds each player's closing line per market
-             and book ('close'). Runs inside the Tuesday results job.
+             line as of Wednesday ('open'). A game whose /odds has no
+             modeled prop lines yet (books post Sunday props late in the
+             week; a probe six days out found none) is neither cached nor
+             marked collected, so Saturday retries it.
+  saturday   GET /odds again only for this week's not-yet-kicked-off games
+             that Wednesday found without prop lines. Runs inside the
+             Saturday prep job; spends nothing (not even /account) when
+             there's nothing to retry.
+  tuesday    GET /historical-odds per collected game that has since kicked
+             off: rebuilds each player's closing line per market and book
+             ('close'). Runs inside the Tuesday results job; spends nothing
+             when there's nothing to fetch.
 
 Raw responses are filtered to the three books and four markets, gzipped,
 and cached under data/raw/oddspapi/nfl/<season>/w<week>/, so reruns are
-free. Expected spend: ~19 requests on Wednesday (account, markets,
-fixtures, ~16 games) and ~17 on Tuesday (account, ~16 games), so ~36 a
-week, ~155 a month.
+free. Expected spend in a 14-16 game week: ~16-19 on Wednesday (account,
+/markets every other week, fixtures, one /odds per game), 0 to ~15 on
+Saturday (account plus each game Wednesday found without props), ~15-17 on
+Tuesday (account, one per game): ~32-50 a week. `--dry-run` prints the
+plan per week from the schedule and simulates the budget guard, without
+any request or write.
 
 Request budget (same idea as odds_theoddsapi's credit guard): every run
 first reads request_count from GET /account (which itself costs one
@@ -33,8 +44,10 @@ Spends nothing unless both ODDSPAPI_API_KEY is set and
 ODDSPAPI_COLLECT_ENABLED=1 (off by default, so wiring the step into the
 scheduled jobs doesn't start live calls on its own).
 
-    docker compose run --rm backend python -m backend.ingest.odds_oddspapi_nfl wednesday
-    docker compose run --rm backend python -m backend.ingest.odds_oddspapi_nfl tuesday
+    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl wednesday
+    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl saturday
+    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl tuesday
+    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl --dry-run
 """
 
 from __future__ import annotations
@@ -48,6 +61,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 import duckdb
 import requests
@@ -379,7 +393,33 @@ def _save_names(conn: duckdb.DuckDBPyConnection, fx: dict, names: dict[str, str]
         )
 
 
-# ---- the two steps -------------------------------------------------------------
+# ---- the three steps -----------------------------------------------------------
+
+def _collect_open(conn: duckdb.DuckDBPyConnection, client: Client, fx: dict, markets: dict[int, dict],
+                  now: datetime) -> int:
+    """/odds for one fixture: names and open lines. Only a response with
+    prop lines is cached and marks the fixture collected; an empty one is
+    retried by a later run (Saturday)."""
+    path = _week_dir(fx["season"], fx["week"]) / f"{fx['fixture_id']}_odds.json.gz"
+    odds = _read_gz(path)
+    fresh = odds is None
+    if fresh:
+        body = client.get("/odds", fixtureId=fx["fixture_id"], bookmakers=",".join(BOOKMAKERS), oddsFormat="decimal")
+        odds = {**{k: v for k, v in body.items() if k != "bookmakerOdds"},
+                "bookmakerOdds": filter_bookmaker_markets(body.get("bookmakerOdds"), markets)}
+    rows = open_lines(odds, markets)
+    names = player_names(odds)
+    if names:
+        _save_names(conn, fx, names)
+    if not rows:
+        return 0
+    if fresh:
+        _write_gz(path, odds)
+    _save_lines(conn, fx["fixture_id"], fx["game_id"], "open", rows, now)
+    conn.execute("UPDATE nfl_oddspapi_fixtures SET odds_fetched_at = ? WHERE fixture_id = ?",
+                 [now.replace(tzinfo=None), fx["fixture_id"]])
+    return len(rows)
+
 
 def run_wednesday(conn: duckdb.DuckDBPyConnection, client: Client, now: datetime) -> dict:
     """Coming week (now .. now+7d): fixtures, then /odds per game not yet collected."""
@@ -411,31 +451,50 @@ def run_wednesday(conn: duckdb.DuckDBPyConnection, client: Client, now: datetime
             "SET game_id = excluded.game_id, kickoff_utc = excluded.kickoff_utc",
             [fx["fixture_id"], fx["game_id"], fx["season"], fx["week"], fx["kickoff_utc"], fx["home_team"], fx["away_team"]],
         )
-        path = _week_dir(fx["season"], fx["week"]) / f"{fx['fixture_id']}_odds.json.gz"
-        odds = _read_gz(path)
-        if odds is None:
-            body = client.get("/odds", fixtureId=fx["fixture_id"], bookmakers=",".join(BOOKMAKERS), oddsFormat="decimal")
-            odds = {**{k: v for k, v in body.items() if k != "bookmakerOdds"},
-                    "bookmakerOdds": filter_bookmaker_markets(body.get("bookmakerOdds"), markets)}
-            _write_gz(path, odds)
-        rows = open_lines(odds, markets)
-        _save_names(conn, fx, player_names(odds))
-        _save_lines(conn, fx["fixture_id"], fx["game_id"], "open", rows, now)
-        conn.execute("UPDATE nfl_oddspapi_fixtures SET odds_fetched_at = ? WHERE fixture_id = ?",
-                     [now.replace(tzinfo=None), fx["fixture_id"]])
-        collected += 1
-        lines += len(rows)
-    return {"games": len(games), "matched": len(matched), "collected": collected, "open_lines": lines, "requests": client.spent}
+        n = _collect_open(conn, client, fx, markets, now)
+        collected += n > 0
+        lines += n
+    return {"games": len(games), "matched": len(matched), "collected": collected,
+            "no_props_yet": len(matched) - collected, "open_lines": lines, "requests": client.spent}
 
 
-def run_tuesday(conn: duckdb.DuckDBPyConnection, client: Client, now: datetime) -> dict:
-    """/historical-odds for collected games that finished in the last 10 days."""
-    todo = conn.execute(
+def _saturday_todo(conn: duckdb.DuckDBPyConnection, now: datetime) -> list[tuple]:
+    return conn.execute(
+        "SELECT fixture_id, game_id, season, week, kickoff_utc, home_team, away_team FROM nfl_oddspapi_fixtures "
+        "WHERE odds_fetched_at IS NULL AND kickoff_utc > ? AND kickoff_utc <= ? ORDER BY kickoff_utc",
+        [now, now + timedelta(days=4)],
+    ).fetchall()
+
+
+def run_saturday(conn: duckdb.DuckDBPyConnection, client: Client, now: datetime) -> dict:
+    """Retry /odds for this week's games Wednesday found without prop lines."""
+    todo = _saturday_todo(conn, now)
+    if not todo:
+        return {"games": 0, "requests": client.spent}
+    markets = load_markets(client, now)
+    collected = lines = 0
+    for fixture_id, game_id, season, week, kickoff, home, away in todo:
+        fx = {"fixture_id": fixture_id, "game_id": game_id, "season": season, "week": week,
+              "home_team": home, "away_team": away}
+        n = _collect_open(conn, client, fx, markets, now)
+        collected += n > 0
+        lines += n
+    return {"games": len(todo), "collected": collected, "no_props_yet": len(todo) - collected,
+            "open_lines": lines, "requests": client.spent}
+
+
+def _tuesday_todo(conn: duckdb.DuckDBPyConnection, now: datetime) -> list[tuple]:
+    return conn.execute(
         "SELECT fixture_id, game_id, season, week, kickoff_utc FROM nfl_oddspapi_fixtures "
         "WHERE hist_fetched_at IS NULL AND odds_fetched_at IS NOT NULL AND kickoff_utc <= ? AND kickoff_utc >= ? "
         "ORDER BY kickoff_utc",
         [now - HIST_DELAY_AFTER_KICKOFF, now - timedelta(days=10)],
     ).fetchall()
+
+
+def run_tuesday(conn: duckdb.DuckDBPyConnection, client: Client, now: datetime) -> dict:
+    """/historical-odds for collected games that finished in the last 10 days."""
+    todo = _tuesday_todo(conn, now)
     if not todo:
         return {"games": 0, "requests": client.spent}
     markets = load_markets(client, now)
@@ -457,6 +516,10 @@ def run_tuesday(conn: duckdb.DuckDBPyConnection, client: Client, now: datetime) 
     return {"games": len(todo), "close_lines": lines, "requests": client.spent}
 
 
+STEPS = {"wednesday": (run_wednesday, None), "saturday": (run_saturday, _saturday_todo),
+         "tuesday": (run_tuesday, _tuesday_todo)}
+
+
 def run(step: str, conn: duckdb.DuckDBPyConnection | None = None, **client_kwargs) -> dict:
     key = _api_key()
     if not key:
@@ -466,9 +529,12 @@ def run(step: str, conn: duckdb.DuckDBPyConnection | None = None, **client_kwarg
     conn = conn or get_nfl_connection()
     client = Client(conn, key, **client_kwargs)
     now = client.now()
+    step_fn, todo = STEPS[step]
+    if todo is not None and not todo(conn, now):
+        return {"games": 0, "requests": 0, "account_count": None}  # nothing to do: skip even /account
     try:
         client.start()
-        result = (run_wednesday if step == "wednesday" else run_tuesday)(conn, client, now)
+        result = step_fn(conn, client, now)
     except BudgetExhausted as e:
         logger.warning("odds_oddspapi_nfl: %s", e)
         result = {"stopped": str(e), "requests": client.spent}
@@ -479,10 +545,93 @@ def run(step: str, conn: duckdb.DuckDBPyConnection | None = None, **client_kwarg
     return result
 
 
+# ---- dry run -------------------------------------------------------------------
+
+ET = ZoneInfo("America/New_York")
+
+
+def _at_et(day, hour: int = 9) -> datetime:
+    return datetime(day.year, day.month, day.day, hour, tzinfo=ET).astimezone(timezone.utc)
+
+
+def _guard(count: int, budget: int, wanted: int) -> tuple[int, int]:
+    """What the budget guard lets one run spend: (requests made, new count).
+    wanted includes the /account call."""
+    if wanted == 0 or count >= budget:
+        return 0, count
+    made, count = 1, count + 1  # /account
+    if count >= budget:
+        return made, count
+    extra = min(wanted - 1, budget - count)
+    return made + extra, count + extra
+
+
+def plan(conn: duckdb.DuckDBPyConnection, now: datetime, budget: int | None = None) -> dict:
+    """Requests each scheduled run would make for the rest of the season,
+    from nfl_schedule alone, with the budget guard simulated per calendar
+    month (worst case: Saturday retries every game after it). No HTTP, no
+    writes. The live guard starts from GET /account's real count instead
+    of the last logged one."""
+    budget = budget if budget is not None else _budget()
+    games = conn.execute(
+        "SELECT season, week, kickoff_utc FROM nfl_schedule WHERE kickoff_utc > ? ORDER BY kickoff_utc", [now]
+    ).fetchall()
+    cached = _read_gz(CACHE_ROOT / "markets.json.gz")
+    markets_at = datetime.fromisoformat(cached["fetched_at"]) if cached else None
+
+    # Wednesday runs: today if it's a Wednesday past 9 AM ET (a manual catch-up), then every Wednesday 9 AM ET.
+    local = now.astimezone(ET)
+    first = local.date() + timedelta(days=(2 - local.weekday()) % 7)
+    weds = ([now] if local.weekday() == 2 and local.hour >= 9 else []) + \
+        [_at_et(first + timedelta(weeks=i)) for i in range(0, 30) if _at_et(first + timedelta(weeks=i)) > now]
+    kicks = [(s, w, k if k.tzinfo else k.replace(tzinfo=timezone.utc)) for s, w, k in games]
+
+    counts: dict[str, int] = {f"{now:%Y-%m}": last_known_count(conn, now)}
+    runs, weeks = [], []
+    for wed in weds:
+        wk = [g for g in kicks if wed < g[2] <= wed + timedelta(days=7)]
+        if not wk:
+            continue
+        markets = 0 if markets_at and wed - markets_at < MARKETS_TTL else 1
+        markets_at = wed if markets else markets_at
+        sat = _at_et(wed.astimezone(ET).date() + timedelta(days=3))
+        after_sat = sum(1 for g in wk if g[2] > sat)
+        tue = _at_et(wed.astimezone(ET).date() + timedelta(days=6))
+        wed_n = 2 + markets + len(wk)  # account, fixtures, one /odds per game
+        tue_n = 1 + len(wk)
+        week = {"season": wk[0][0], "week": wk[0][1], "games": len(wk),
+                "wednesday": f"{wed.astimezone(ET):%a %b %d %H:%M} ET", "wednesday_requests": wed_n,
+                "saturday_requests_max": 1 + after_sat if after_sat else 0, "tuesday_requests": tue_n}
+        weeks.append(week)
+        runs += [(wed, wed_n), (sat, week["saturday_requests_max"]), (tue, tue_n)]
+
+    months: dict[str, dict] = {}
+    for when, wanted in sorted(runs):
+        m = f"{when.astimezone(ET):%Y-%m}"
+        made, counts[m] = _guard(counts.get(m, 0), budget, wanted)
+        mo = months.setdefault(m, {"start_count": counts[m] - made, "wanted": 0, "made": 0})
+        mo["wanted"] += wanted
+        mo["made"] += made
+        mo["end_count"] = counts[m]
+        mo["guard_trims"] = mo["wanted"] - mo["made"]
+    return {"budget": budget, "bookmakers": list(BOOKMAKERS), "markets": sorted(MARKET_TYPES),
+            "weeks": weeks, "months_worst_case": months}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("step", choices=["wednesday", "tuesday"])
+    ap.add_argument("step", nargs="?", choices=list(STEPS))
+    ap.add_argument("--dry-run", action="store_true", help="print the planned requests per week; no HTTP, no writes")
     args = ap.parse_args()
+    if args.dry_run:
+        conn = get_nfl_connection(read_only=True)
+        try:
+            print(json.dumps(plan(conn, _utcnow()), indent=1, default=str))
+        finally:
+            conn.close()
+        return
+    if not args.step:
+        ap.error("step is required unless --dry-run")
     result = run(args.step)
     print(json.dumps(result, default=str))
     sys.exit(1 if "error" in result else 0)
