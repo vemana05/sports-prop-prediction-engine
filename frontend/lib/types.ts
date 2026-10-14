@@ -224,6 +224,42 @@ export interface ModelVsLines {
   summary?: string[];
 }
 
+export interface JobStatus {
+  key: string;
+  label: string;
+  schedule: string;
+  script: string;
+  last_scheduled: string;
+  next_scheduled: string;
+  runs_logged: number;
+  outcome: "success" | "failed" | "running" | "never ran";
+  log: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_s: number | null;
+  last_error: string | null;
+  late: boolean;
+}
+
+export interface ApiUsage { name: string; limit: number; budget: number; used: number | null; last_call: string | null; note: string | null }
+
+export interface TableStatus { table: string; rows: number; last_updated: string | null; time_column: string | null; cadence_days: number | null; late: boolean }
+
+export interface DataSources {
+  as_of: string;
+  flags: string[];
+  jobs: JobStatus[];
+  usage: ApiUsage[];
+  warehouses: { name: string; path: string; error: string | null; tables: TableStatus[] }[];
+  models: { league: string; name: string; version: string | null; markets: string[]; modified: string }[];
+  review_queue: {
+    total: number;
+    by_source: Record<string, number>;
+    truncated: boolean;
+    rows: { source: string; name: string; raw_id: string | null; reason: string; best_candidate: string | null; best_score: number | null; created_at: string | null; context: string | null }[];
+  };
+}
+
 export type NflMarket = "passing_yards" | "rushing_yards" | "receiving_yards" | "receptions";
 
 export interface NflProjection {

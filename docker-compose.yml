@@ -29,6 +29,8 @@ services:
       - ./config:/app/config
       - ./reports:/app/reports
       - ./tests:/app/tests
+      # Read-only: the Data Sources page reads job logs (backend/api/data_sources.py).
+      - ./logs:/app/logs:ro
     ports:
       - "8000:8000"
     command: ["uvicorn", "backend.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "backend"]

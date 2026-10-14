@@ -11,6 +11,7 @@ const LINKS = [
   { href: "/tracker", short: "Tracker", long: "Bet tracker" },
   { href: "/performance", short: "Model", long: "Model performance" },
   { href: "/lines", short: "Lines", long: "Model vs. lines" },
+  { href: "/sources", short: "Sources", long: "Data sources" },
 ];
 
 export function SiteNav() {

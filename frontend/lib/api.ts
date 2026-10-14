@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tansta
 import type {
   Bet,
   BetResult,
+  DataSources,
   League,
   Leg,
   LegPrice,
@@ -110,6 +111,9 @@ export const scoreParlay = (body: NflBody & { leg_ids: string[]; tier: TierName;
 
 export const usePerformance = () =>
   useQuery({ queryKey: ["performance"], queryFn: () => get<Performance>("/api/performance"), staleTime: Infinity });
+
+export const useDataSources = () =>
+  useQuery({ queryKey: ["data-sources"], queryFn: () => get<DataSources>("/api/data-sources"), refetchInterval: 60_000 });
 
 export const useModelVsLines = () =>
   useQuery({ queryKey: ["model-vs-lines"], queryFn: () => get<ModelVsLines>("/api/nfl/model-vs-lines"), staleTime: Infinity });

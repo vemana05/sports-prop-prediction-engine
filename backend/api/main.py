@@ -36,7 +36,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from backend.api import nfl_builder, replay as replay_mod, tracker
+from backend.api import data_sources, nfl_builder, replay as replay_mod, tracker
 from backend.predict import nfl_projections, schedule_projections
 from backend.bankroll.kelly import recommend_stake
 from backend.parlay import nfl_search
@@ -488,6 +488,13 @@ def _nfl_performance() -> dict | None:
             "chart_url": f"/api/reports/{chart}" if (REPORTS_DIR / chart).exists() else None,
         })
     return {"test_seasons": raw["test_seasons"], "rows": rows}
+
+
+@app.get("/api/data-sources")
+def data_sources_status() -> dict:
+    """Data Sources page: jobs, API usage, table freshness, models, review queue.
+    Read-only; no API calls; key values are redacted."""
+    return data_sources.build_status()
 
 
 @app.get("/api/nfl/model-vs-lines")
