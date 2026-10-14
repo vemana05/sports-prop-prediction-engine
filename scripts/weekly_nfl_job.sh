@@ -21,8 +21,8 @@ export PATH="/Users/vemana/.docker/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 # warehouse, never warehouse.duckdb, and spends no Odds API credits. The
 # OddsPapi steps spend nothing unless ODDSPAPI_API_KEY is set and
 # ODDSPAPI_COLLECT_ENABLED=1 in .env, and stop at 200 of 250 requests/month.
-# Steps added since the image was last built run in the api service, whose
-# source is mounted (the backend service runs the code baked into the image).
+# Both the backend and api services mount ./backend, so every step runs the
+# current source.
 #
 # Same requirements as the daily job: Docker Desktop running and the Mac
 # awake at the scheduled time (see com.parlaybuilder.weeklynfljob.plist).

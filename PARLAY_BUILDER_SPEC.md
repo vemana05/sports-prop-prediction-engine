@@ -572,9 +572,9 @@ a test of betting edge.
 writes: Saturday `prep` (schedule, injuries, depth charts, predictions log, OddsPapi retry), Tuesday `results`
 (scores, stats, snaps, features rebuild, backup, then OddsPapi closing lines), Wednesday `lines` (predictions log,
 then OddsPapi opening lines). The Tuesday job trains a weekly walk-forward model only with `NFL_WEEKLY_RETRAIN=1`
-(off: no gain in the 2026 weeks 1–4 eval); otherwise models are never retrained by a job. Steps added after the
-image was last built (OddsPapi, predictions log) run in the `api` service, whose source is mounted; the `backend`
-service runs the code baked into its image, so rebuild it after changing code it runs.
+(off: no gain in the 2026 weeks 1–4 eval); otherwise models are never retrained by a job. Both the `backend` and
+`api` services mount `./backend`, so jobs always run the current source (until 2026-10-14 `backend` ran code baked
+into its image, which is why the 2026-10-13 closing-line step failed). Rebuild only when requirements change.
 
 **NFL predictions log** (`backend/predict/log_nfl_predictions.py`, table `nfl_predictions_log` in the NFL
 warehouse). The NFL counterpart of the NBA log: every projected player and market (mean, 25th and 75th

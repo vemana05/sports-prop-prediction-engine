@@ -5,7 +5,10 @@ services:
       dockerfile: backend/Dockerfile
     env_file:
       - .env
+    # Source mounted like api's, so scheduled jobs never run stale code baked
+    # into the image. Rebuild only when backend/requirements change.
     volumes:
+      - ./backend:/app/backend
       - ./data:/app/data
       - ./config:/app/config
       - ./reports:/app/reports
