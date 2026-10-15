@@ -39,6 +39,11 @@ DEFAULT_RESULTS_PER_TIER = 5
 
 LEG_MODEL_VS_MARKET_DIVERGENCE_LIMIT = 0.15  # probability points
 PARLAY_EV_SANITY_LIMIT = 0.30  # per $1
+# Stricter limits until every team has played EARLY_SEASON_GAMES
+# (backend/predict/early_season.py): features still lean on last season and
+# star projections run low (spec 5.9), so smaller gaps are already suspect.
+EARLY_LEG_MODEL_VS_MARKET_DIVERGENCE_LIMIT = 0.10
+EARLY_PARLAY_EV_SANITY_LIMIT = 0.20
 
 
 SIDES = ("both", "over", "under")
@@ -175,7 +180,7 @@ def _beam_search_by_naive_ev(
     return unique
 
 
-def _sanity_flags(legs: list[Leg], model_ev: float) -> list[str]:
+def _sanity_flags(legs: list[Leg], model_ev: float, early_season: bool = False) -> list[str]:
     """Reasons to distrust this parlay's numbers rather than recommend it:
     any leg whose (calibrated) model probability and the book's own
     no-vig probability disagree by more than
@@ -184,20 +189,24 @@ def _sanity_flags(legs: list[Leg], model_ev: float) -> list[str]:
     real, exploitable edge this big against a liquid market is possible
     but rare; a feature/data bug upstream of the model is far more common —
     see this module's docstring. Checked on the unshrunk numbers so the
-    shrink can't hide a bug the guard exists to catch."""
+    shrink can't hide a bug the guard exists to catch. `early_season`
+    switches to the stricter EARLY_* limits."""
+    leg_limit = EARLY_LEG_MODEL_VS_MARKET_DIVERGENCE_LIMIT if early_season else LEG_MODEL_VS_MARKET_DIVERGENCE_LIMIT
+    ev_limit = EARLY_PARLAY_EV_SANITY_LIMIT if early_season else PARLAY_EV_SANITY_LIMIT
+    note = " (early-season limit)" if early_season else ""
     reasons = []
     for leg in legs:
         no_vig = leg.no_vig_p_hit()
         if no_vig is None:
             continue
         divergence = abs(leg.p_hit() - no_vig)
-        if divergence > LEG_MODEL_VS_MARKET_DIVERGENCE_LIMIT:
+        if divergence > leg_limit:
             reasons.append(
                 f"{leg.player_name} {leg.market} {leg.side} {leg.line}: model {leg.p_hit():.2f} vs. "
-                f"no-vig {no_vig:.2f} ({divergence * 100:.0f} points apart)"
+                f"no-vig {no_vig:.2f} ({divergence * 100:.0f} points apart){note}"
             )
-    if model_ev > PARLAY_EV_SANITY_LIMIT:
-        reasons.append(f"parlay EV {model_ev:+.2f} per $1 is implausibly large")
+    if model_ev > ev_limit:
+        reasons.append(f"parlay EV {model_ev:+.2f} per $1 is implausibly large{note}")
     return reasons
 
 
@@ -208,6 +217,7 @@ def score_parlay(
     bankroll: float,
     n_simulations: int = DEFAULT_N_SIMULATIONS,
     seed: int | None = None,
+    early_season: bool = False,
 ) -> ParlayCandidate:
     """The one scoring path for any leg set — suggested, swapped-in after a
     veto, or hand-picked in manual mode: correlation-aware Monte Carlo hit
@@ -222,7 +232,7 @@ def score_parlay(
     stake = recommend_stake(p_sized, d, bankroll, tier_config["max_stake_pct_bankroll"])
     model_ev = ev_per_dollar(p_hit, d)
 
-    flag_reasons = _sanity_flags(legs, model_ev)
+    flag_reasons = _sanity_flags(legs, model_ev, early_season)
     if flag_reasons:
         stake = StakeRecommendation(
             model_p=stake.model_p, decimal_odds=stake.decimal_odds, ev_per_dollar=stake.ev_per_dollar,
@@ -277,6 +287,7 @@ def run_search(
     n_simulations: int = DEFAULT_N_SIMULATIONS,
     seed: int | None = None,
     sides: str = "both",
+    early_season: bool = False,
 ) -> tuple[list[ParlayCandidate], SearchReport]:
     """`all_legs` should already be filtered (`filter_pool`); `sides` is
     only used to word the report."""
@@ -308,7 +319,7 @@ def run_search(
         return [], report
 
     finalist_leg_sets = _beam_search_by_naive_ev(eligible, legs_min, legs_max, beam_width, finalists_per_size)
-    scored = [score_parlay(legs, tier_config, corr_matrices, bankroll, n_simulations, seed) for legs in finalist_leg_sets]
+    scored = [score_parlay(legs, tier_config, corr_matrices, bankroll, n_simulations, seed, early_season) for legs in finalist_leg_sets]
     report.n_combinations = len(scored)
     if scored:
         report.combo_p_min = min(c.p_hit for c in scored)
@@ -358,6 +369,7 @@ def find_replacement(
     n_simulations: int = DEFAULT_N_SIMULATIONS,
     seed: int | None = None,
     sides: str = "both",
+    early_season: bool = False,
 ) -> tuple[ParlayCandidate | None, str | None]:
     """Swap `vetoed_leg` out of `parlay_legs` for the best leg in `pool`
     (already filtered for side, vetoes and games) that clears the tier's
@@ -384,7 +396,7 @@ def find_replacement(
     # Rank by the cheap independence estimate first; only the shortlist gets
     # the real Monte Carlo.
     fits.sort(key=lambda leg: ev_per_dollar(_naive_independent_p(remaining + [leg]), _combined_decimal_odds(remaining + [leg])), reverse=True)
-    scored = [score_parlay(remaining + [leg], tier_config, corr_matrices, bankroll, n_simulations, seed) for leg in fits[:REPLACEMENT_SHORTLIST]]
+    scored = [score_parlay(remaining + [leg], tier_config, corr_matrices, bankroll, n_simulations, seed, early_season) for leg in fits[:REPLACEMENT_SHORTLIST]]
     in_band = [c for c in scored if in_tier_range(c.p_hit, tier_config)]
     if not in_band:
         lo, hi = min(c.p_hit for c in scored), max(c.p_hit for c in scored)

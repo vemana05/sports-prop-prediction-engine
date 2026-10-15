@@ -3,6 +3,7 @@ import type {
   Bet,
   BetResult,
   DataSources,
+  EarlySeason,
   League,
   Leg,
   LegPrice,
@@ -161,5 +162,14 @@ export const useReplay = (league: League, market: string | null, period: string 
     },
     placeholderData: keepPreviousData,
     retry: 4, // 503 while a data job holds a warehouse
+    retryDelay: 2500,
+  });
+
+export const useEarlySeason = (enabled = true) =>
+  useQuery({
+    queryKey: ["early-season"],
+    queryFn: () => get<EarlySeason>("/api/nba/early-season"),
+    enabled,
+    retry: 4, // 503 while a data job holds the warehouse
     retryDelay: 2500,
   });

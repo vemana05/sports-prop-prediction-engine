@@ -37,7 +37,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from backend.api import data_sources, nfl_builder, replay as replay_mod, tracker
-from backend.predict import nfl_projections, schedule_projections
+from backend.predict import early_season, nfl_projections, schedule_projections
 from backend.bankroll.kelly import recommend_stake
 from backend.parlay import nfl_search
 from backend.parlay.monte_carlo import Leg
@@ -302,7 +302,8 @@ def replace_leg(req: ReplaceRequest) -> dict:
     pool = SLATE.pool(req.sides, *_filters(req.vetoed + [req.veto_id], req.excluded_games))
 
     replaced, why_not = find_replacement(
-        current, vetoed_leg, pool, req.tier, tier_cfg, SLATE.corr, REFERENCE_BANKROLL, seed=SEARCH_SEED, sides=req.sides
+        current, vetoed_leg, pool, req.tier, tier_cfg, SLATE.corr, REFERENCE_BANKROLL, seed=SEARCH_SEED, sides=req.sides,
+        early_season=SLATE.early_season,
     )
     if replaced is not None:
         new_leg = next(l for l in replaced.legs if leg_id(l) not in req.leg_ids)
@@ -316,7 +317,7 @@ def replace_leg(req: ReplaceRequest) -> dict:
     message = f"No replacement fits: {why_not}"
     if not remaining:
         return {"parlay": None, "added": None, "message": message}
-    c = score_parlay(remaining, tier_cfg, SLATE.corr, REFERENCE_BANKROLL, seed=SEARCH_SEED)
+    c = score_parlay(remaining, tier_cfg, SLATE.corr, REFERENCE_BANKROLL, seed=SEARCH_SEED, early_season=SLATE.early_season)
     if len(remaining) < tier_cfg["legs_min"]:
         message += f" The parlay now has {len(remaining)} leg{'s' if len(remaining) != 1 else ''}, below {req.tier.capitalize()}'s {tier_cfg['legs_min']}-leg minimum."
     return {"parlay": _parlay_json(c, req.bankroll, tier_cfg, req.name), "added": None, "message": message}
@@ -378,7 +379,7 @@ def score(req: ScoreRequest) -> dict:
             raise HTTPException(422, f"{leg.player_name} already has a {leg.market} leg in this parlay.")
         seen.add((leg.player_id_nba, leg.market))
     tier_cfg = load_tiers()[req.tier]
-    c = score_parlay(chosen, tier_cfg, SLATE.corr, REFERENCE_BANKROLL, seed=SEARCH_SEED)
+    c = score_parlay(chosen, tier_cfg, SLATE.corr, REFERENCE_BANKROLL, seed=SEARCH_SEED, early_season=SLATE.early_season)
     return {"parlay": _parlay_json(c, req.bankroll, tier_cfg, "Your parlay")}
 
 
@@ -433,6 +434,17 @@ def schedule(
         g["builder_game_id"] = _slate_game_for(g["home"], g["away"], g["tip_utc"])
         g["lines_posted"] = g["game_id"] in with_lines or g["builder_game_id"] is not None
     return {"status": "ready", "today": schedule_projections.today_et().isoformat(), **data}
+
+
+@app.get("/api/nba/early-season")
+def nba_early_season() -> dict:
+    """Games-played countdown for the early-season banner (Builder,
+    Schedule, Replay). Once the slate is built, the Builder's stricter
+    sanity guard uses the same numbers as of the build."""
+    try:
+        return early_season.status()
+    except duckdb.IOException:
+        raise HTTPException(503, "The warehouse is busy (a data job is running). Try again in a few seconds.")
 
 
 @app.get("/api/replay")

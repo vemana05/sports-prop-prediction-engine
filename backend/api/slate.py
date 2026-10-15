@@ -30,6 +30,7 @@ from backend.ingest.util import logger
 from backend.parlay.correlations import build_correlation_matrices
 from backend.parlay.leg_pool import build_leg_pool
 from backend.parlay.monte_carlo import Leg
+from backend.predict import early_season
 from backend.parlay.search import ParlayCandidate, SearchReport, filter_pool, leg_id, run_search
 
 TIERS_PATH = "config/tiers.yaml"
@@ -61,6 +62,7 @@ class Slate:
     built_at: float | None = None
     build_seconds: float | None = None
     legs_by_id: dict[str, Leg] = field(default_factory=dict)
+    early: dict = field(default_factory=dict)  # early_season.status() as of the build
     _search_cache: dict[tuple, tuple[list[ParlayCandidate], SearchReport]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -79,6 +81,7 @@ class Slate:
                 legs = build_leg_pool(conn)
                 corr = build_correlation_matrices(conn)
                 games, pulled_at = _load_games(conn)
+                early = early_season.status(conn=conn)
             finally:
                 conn.close()
         except Exception as e:  # surfaced to the UI as a plain-language error
@@ -86,12 +89,17 @@ class Slate:
             self.status, self.error = "error", str(e)
             return
 
-        self.legs, self.corr, self.games, self.odds_pulled_at = legs, corr, games, pulled_at
+        self.legs, self.corr, self.games, self.odds_pulled_at, self.early = legs, corr, games, pulled_at, early
         self.legs_by_id = {leg_id(leg): leg for leg in legs}
         self._search_cache = {}
         self.built_at, self.build_seconds = time.time(), round(time.time() - t0, 1)
         self.status, self.error = "ready", None
         logger.info("slate ready: %d legs, %d games in %.1fs", len(legs), len(games), self.build_seconds)
+
+    @property
+    def early_season(self) -> bool:
+        """Stricter sanity guard while any team is under EARLY_SEASON_GAMES."""
+        return bool(self.early.get("active"))
 
     def pool(self, sides: str = "both", vetoed: frozenset = frozenset(), excluded_games: frozenset = frozenset()) -> list[Leg]:
         return filter_pool(self.legs, sides, vetoed, excluded_games)
@@ -103,7 +111,7 @@ class Slate:
         if key not in self._search_cache:
             self._search_cache[key] = run_search(
                 self.pool(sides, vetoed, excluded_games), tier, load_tiers()[tier], self.corr,
-                REFERENCE_BANKROLL, seed=SEARCH_SEED, sides=sides,
+                REFERENCE_BANKROLL, seed=SEARCH_SEED, sides=sides, early_season=self.early_season,
             )
         return self._search_cache[key]
 

@@ -440,3 +440,15 @@ export type Replay =
       naive_is_model: boolean;
       note: string;
     };
+
+/** NBA early-season window: until every team has played `threshold` games. */
+export interface EarlySeason {
+  as_of: string;
+  active: boolean;
+  season: string | null;
+  threshold: number;
+  min_games_played: number | null;
+  games_remaining: number;
+  teams_below: string[];
+  games_played: Record<string, number>;
+}

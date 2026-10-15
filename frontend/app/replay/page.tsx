@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { ActualValue, MissLegend } from "@/components/actual-value";
+import { EarlySeasonBanner } from "@/components/early-season-banner";
 import { LeagueToggle } from "@/components/league-toggle";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -46,6 +47,7 @@ export default function ReplayPage() {
         <h1 className="font-display text-xl font-bold">Replay</h1>
         {isFetching && <span className="text-sm text-muted">Loading…</span>}
       </div>
+      {league === "nba" && <EarlySeasonBanner className="mt-4" />}
 
       {error ? (
         <p className="mt-6 text-danger-ink">Couldn't load the replay: {(error as Error).message}</p>

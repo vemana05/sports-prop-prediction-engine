@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
+import { EarlySeasonBanner } from "@/components/early-season-banner";
 import { LeagueToggle } from "@/components/league-toggle";
 import { NflWeekView } from "@/components/nfl-week";
 import { Button } from "@/components/ui/button";
@@ -62,6 +63,7 @@ export default function SchedulePage() {
         <NflWeekView />
       ) : (
         <>
+          <EarlySeasonBanner className="mt-4" />
           <DateNav current={current} day={day} onChange={setDate} busy={isFetching} />
           {error ? (
             <p className="mt-6 text-danger-ink">Couldn't load the schedule: {(error as Error).message}</p>
