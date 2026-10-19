@@ -248,6 +248,8 @@ function LogBet({ parlay, tier, league }: { parlay: Parlay; tier: TierName; leag
   const [logged, setLogged] = useState<string | null>(null);
   const [bonus, setBonus] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  // "Log as paper bet": paper for this bet only, without changing the saved paper-mode preference.
+  const [paperOnce, setPaperOnce] = useState(false);
   const { log } = useBetMutations();
   const { data: limitStatus } = useLimits();
   const stake = Number(draft.replace(/[$,\s]/g, ""));
@@ -255,7 +257,7 @@ function LogBet({ parlay, tier, league }: { parlay: Parlay; tier: TierName; leag
   // An unpriced NFL parlay can only be paper-traded, at the model's fair odds.
   const unpriced = parlay.decimal_odds == null;
   const fair = (p: number) => Math.round(p >= 0.5 ? -100 * p / (1 - p) : 100 * (1 - p) / p);
-  const asPaper = paper || unpriced;
+  const asPaper = paper || unpriced || paperOnce;
   // Real bets only: a break blocks them; a hit limit needs an explicit, named confirmation. Paper is never blocked.
   const pausedUntil = asPaper ? null : limitStatus?.paused_until ?? null;
   const hitLimits = asPaper ? [] : limitStatus?.hit ?? [];
@@ -269,21 +271,23 @@ function LogBet({ parlay, tier, league }: { parlay: Parlay; tier: TierName; leag
       </p>
     );
 
+  const start = (once: boolean) => {
+    setDraft(parlay.stake > 0 ? String(parlay.stake) : "");
+    setConfirmed(false);
+    setPaperOnce(once);
+    setOpen(true);
+  };
   if (!open)
     return (
-      <div className="border-t border-border px-5 py-3">
-        <Button
-          variant="outline"
-          size="sm"
-          className="w-full"
-          onClick={() => {
-            setDraft(parlay.stake > 0 ? String(parlay.stake) : "");
-            setConfirmed(false);
-            setOpen(true);
-          }}
-        >
+      <div className="flex gap-2 border-t border-border px-5 py-3">
+        <Button variant="outline" size="sm" className="flex-1" onClick={() => start(false)}>
           {asPaper ? "Log paper bet" : "Log bet"}
         </Button>
+        {!asPaper && (
+          <Button variant="ghost" size="sm" className="flex-1" onClick={() => start(true)}>
+            Log as paper bet
+          </Button>
+        )}
       </div>
     );
 
@@ -327,7 +331,16 @@ function LogBet({ parlay, tier, league }: { parlay: Parlay; tier: TierName; leag
         </div>
       </div>
       <label className="flex items-center gap-2 text-xs">
-        <input type="checkbox" checked={asPaper} disabled={unpriced} onChange={(e) => setPaper(e.target.checked)} className="h-4 w-4 accent-[var(--accent)]" />
+        <input
+          type="checkbox"
+          checked={asPaper}
+          disabled={unpriced}
+          onChange={(e) => {
+            setPaperOnce(false);
+            setPaper(e.target.checked);
+          }}
+          className="h-4 w-4 accent-[var(--accent)]"
+        />
         Paper trade (no real money)
       </label>
       {!asPaper && (
@@ -375,18 +388,24 @@ const parseAmerican = (s: string): number | undefined => {
   return Number.isFinite(v) && Math.abs(v) >= 100 ? v : undefined;
 };
 
-/** NFL: type the book's line and American odds for one leg. Applied on blur / Enter. */
+/**
+ * NFL: type the book's line and American odds for one leg. Applied on blur / Enter.
+ * The first odds box is the leg's own side (over, or under for an under leg); the
+ * other side is optional and only removes the vig.
+ */
 function PriceInputs({ leg, price, onChange }: { leg: Leg; price?: LegPrice; onChange: (p: LegPrice | null) => void }) {
+  const own = leg.side === "under" ? "under" : "over";
+  const other = own === "over" ? "under" : "over";
   const [line, setLine] = useState(price?.line ?? "");
-  const [over, setOver] = useState(price?.over != null ? String(price.over) : "");
-  const [under, setUnder] = useState(price?.under != null ? String(price.under) : "");
+  const [mine, setMine] = useState(price?.[own] != null ? String(price[own]) : "");
+  const [theirs, setTheirs] = useState(price?.[other] != null ? String(price[other]) : "");
   const bad = (s: string) => s.trim() !== "" && parseAmerican(s) === undefined;
   const commit = () => {
-    if (bad(over) || bad(under)) return;
+    if (bad(mine) || bad(theirs)) return;
     const next: LegPrice = {};
     if (line.trim()) next.line = line.trim();
-    if (over.trim()) next.over = parseAmerican(over);
-    if (under.trim()) next.under = parseAmerican(under);
+    if (mine.trim()) next[own] = parseAmerican(mine);
+    if (theirs.trim()) next[other] = parseAmerican(theirs);
     onChange(Object.keys(next).length ? next : null);
   };
   const field = "num h-7 w-full rounded-control border border-border bg-surface px-1.5 text-xs outline-none placeholder:text-muted/40 focus:border-ink aria-[invalid=true]:border-danger";
@@ -401,12 +420,12 @@ function PriceInputs({ leg, price, onChange }: { leg: Leg; price?: LegPrice; onC
         <input className={field} value={line} placeholder={leg.rung != null ? `${leg.rung}+` : String(leg.line)} onChange={(e) => setLine(e.target.value)} onBlur={commit} />
       </label>
       <label className="text-[11px] text-muted">
-        Over odds
-        <input className={field} value={over} placeholder="-150" inputMode="numeric" aria-invalid={bad(over)} onChange={(e) => setOver(e.target.value)} onBlur={commit} />
+        {own === "over" ? "Over odds" : "Under odds"}
+        <input className={field} value={mine} placeholder="-150" inputMode="numeric" aria-invalid={bad(mine)} onChange={(e) => setMine(e.target.value)} onBlur={commit} />
       </label>
       <label className="text-[11px] text-muted">
-        Under (opt.)
-        <input className={field} value={under} placeholder="+120" inputMode="numeric" aria-invalid={bad(under)} onChange={(e) => setUnder(e.target.value)} onBlur={commit} />
+        {other === "over" ? "Over (opt.)" : "Under (opt.)"}
+        <input className={field} value={theirs} placeholder="+120" inputMode="numeric" aria-invalid={bad(theirs)} onChange={(e) => setTheirs(e.target.value)} onBlur={commit} />
       </label>
       <button type="submit" className="sr-only">Apply</button>
     </form>

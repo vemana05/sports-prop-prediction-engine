@@ -9,6 +9,7 @@ Phase 4 parlay search and Kelly sizing code.
     GET  /api/legs?sides=both&veto=...&exclude=...
     POST /api/parlay/replace     veto one leg, swap in the best leg that still fits
     POST /api/parlay/score       score a hand-picked leg set ("Build my own")
+    GET  /api/nfl/players?week=N NFL Build my own: projected players, ladders, Out list
     GET  /api/schedule?date=YYYY-MM-DD   games + tentative projections (default: next game day)
     GET  /api/schedule?league=nfl&week=N NFL week + tentative projections (default: current week)
     GET  /api/replay?league=nba&market=points&period=YYYY-MM-DD&weeks=8   out-of-sample replay of a past day
@@ -53,7 +54,7 @@ Sides = Literal["both", "over", "under"]
 REPORTS_DIR = Path("reports")
 
 MARKET_ABBR = {"points": "pts", "rebounds": "reb", "assists": "ast", "fg3m": "3PM"}
-NFL_MANUAL_UNAVAILABLE = "Build my own isn't available for NFL yet; veto legs in a suggested parlay instead."
+NFL_MANUAL_UNAVAILABLE = "NFL Build my own picks from /api/nfl/players (any player, market, line and side)."
 
 
 def _nfl_pool(week: int | None) -> nfl_builder.WeekPool:
@@ -334,7 +335,7 @@ def _nfl_replace(req: ReplaceRequest) -> dict:
     wp = _nfl_pool(req.week)
     prices = _nfl_prices(req.prices)
     current = nfl_builder.resolve(wp, req.leg_ids, prices)
-    vetoed_leg = wp.legs_by_id[req.veto_id]
+    vetoed_leg = nfl_builder.find_leg(wp, req.veto_id)
     vetoed = set(req.vetoed) | {req.veto_id}
     pool = [l for l in wp.legs if leg_id(l) not in vetoed and l.game_id not in set(req.excluded_games)]
     corr = nfl_builder.NFL_SLATE.corr()
@@ -360,6 +361,15 @@ class ScoreRequest(BaseModel):
     leg_ids: list[str] = Field(min_length=1, max_length=12)
     tier: Tier = "risky"
     bankroll: float = Field(500.0, gt=0, le=10_000_000)
+
+
+@app.get("/api/nfl/players")
+def nfl_players(week: int | None = Query(None, ge=1, le=23)) -> dict:
+    """NFL Build my own: every projected player in the week's unstarted games
+    with each market's ladder, plus players listed Out (shown disabled)."""
+    if warming := nfl_projections.ensure_models(week=week):
+        return warming
+    return nfl_builder.players_json(_nfl_pool(week))
 
 
 @app.post("/api/parlay/score")

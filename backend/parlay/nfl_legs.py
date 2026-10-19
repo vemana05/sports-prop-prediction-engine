@@ -18,7 +18,8 @@ models/calibration.py. Correlations are pooled the same way as NBA's
 
 Players listed Out never reach the pool: nfl_projections only projects
 depth-chart players not on that week's Out list. Questionable players stay,
-marked "Q".
+marked "Q". `out_players` lists the Out ones so "Build my own" can show them
+disabled; `make_leg` builds a leg at any line or side for that picker.
 """
 
 from __future__ import annotations
@@ -90,19 +91,24 @@ class NflLeg(Leg):
             return stats.nbinom.ppf(u, r, r / (r + mu))
         return mu + (self.spread.a + self.spread.b * mu) * np.quantile(self.spread.z_sorted, u)
 
+    @property
+    def own_price(self) -> float | None:
+        """The typed price for this leg's own side."""
+        return self.over_price if self.side == "over" else self.under_price
+
     def no_vig_p_hit(self) -> float | None:
-        """Both sides typed: the book's no-vig probability. Only the over
-        price typed: its implied probability, vig included (a slightly
+        """Both sides typed: the book's no-vig probability. Only this leg's
+        side typed: its implied probability, vig included (a slightly
         conservative stand-in, flagged in the UI)."""
         if self.over_price and self.under_price:
             return super().no_vig_p_hit()
-        if self.over_price:
-            return 1 / self.over_price
+        if self.own_price:
+            return 1 / self.own_price
         return None
 
     @property
     def priced(self) -> bool:
-        return bool(self.over_price)
+        return bool(self.own_price)
 
 
 def rung_line(rung: int) -> float:
@@ -230,6 +236,7 @@ def build_pool(week: int | None = None) -> dict:
 
     legs: list[NflLeg] = []
     games = {}
+    players: dict[str, dict] = {}
     for g in proj["games"]:
         if not _unstarted(g, now):
             continue
@@ -237,17 +244,16 @@ def build_pool(week: int | None = None) -> dict:
         for side in ("away", "home"):
             t = g["teams"][side]
             for p in t["players"]:
-                for market, v in p["projections"].items():
+                player = {
+                    "player_id": p["player_id"], "player_name": p["player_name"], "position": p["position"],
+                    "team": t["team"], "opponent": t["opponent"], "is_home": side == "home", "game_id": g["game_id"],
+                    "kickoff_utc": g["kickoff_utc"], "questionable": p["questionable"],
+                    "means": {m: v["mean"] for m, v in p["projections"].items()},
+                }
+                players[p["player_id"]] = player
+                for market in player["means"]:
                     for rung in LADDERS[market]:
-                        leg = NflLeg(
-                            player_id_nba=p["player_id"], player_name=p["player_name"], game_id=g["game_id"],
-                            team=t["team"], market=market, side="over", line=rung_line(rung),
-                            predicted_mean=v["mean"], dispersion=spreads[market].r or 0.0, decimal_odds=0.0,
-                            calibrator=cals[market], spread=spreads[market], position=p["position"],
-                            opponent=t["opponent"], is_home=side == "home", kickoff_utc=g["kickoff_utc"],
-                            questionable=p["questionable"], rung=rung,
-                            warnings=(narrow[market],) if market in narrow else (),
-                        )
+                        leg = make_leg(player, market, "over", rung_line(rung), spreads, cals, narrow, rung=rung)
                         if P_RANGE[0] <= leg.p_hit() <= P_RANGE[1]:
                             legs.append(leg)
 
@@ -256,4 +262,38 @@ def build_pool(week: int | None = None) -> dict:
         "legs": legs, "games": games, "season": season, "week": week, "weeks": proj["weeks"],
         "injuries_posted": proj["injuries_posted"], "computed_at": proj["computed_at"],
         "calibrated": all(c is not None for c in cals.values()),
+        "players": players, "out": out_players(season, week, {t for g in games.values() for t in (g["home"], g["away"])}),
+        "spreads": spreads, "calibrators": cals, "narrow": narrow,
     }
+
+
+def make_leg(player: dict, market: str, side: str, line: float, spreads: dict, cals: dict, narrow: dict,
+             rung: int | None = None) -> NflLeg:
+    """One leg for a projected player (a `build_pool` players entry) at any
+    line, over or under. `rung` marks an over at a ladder value ("60+")."""
+    return NflLeg(
+        player_id_nba=player["player_id"], player_name=player["player_name"], game_id=player["game_id"],
+        team=player["team"], market=market, side=side, line=line,
+        predicted_mean=player["means"][market], dispersion=spreads[market].r or 0.0, decimal_odds=0.0,
+        calibrator=cals[market], spread=spreads[market], position=player["position"],
+        opponent=player["opponent"], is_home=player["is_home"], kickoff_utc=player["kickoff_utc"],
+        questionable=player["questionable"], rung=rung if side == "over" else None,
+        warnings=(narrow[market],) if market in narrow else (),
+    )
+
+
+def out_players(season: int, week: int, teams: set[str]) -> list[dict]:
+    """Skill-position players listed Out this week on these teams."""
+    if not teams:
+        return []
+    conn = duckdb.connect(_db_path(), read_only=True)
+    try:
+        rows = conn.execute(
+            "SELECT player_id, any_value(player_name), team, any_value(position) FROM nfl_injuries "
+            "WHERE season = ? AND week = ? AND report_status = 'Out' AND position IN ('QB', 'RB', 'WR', 'TE') "
+            f"AND team IN ({', '.join('?' * len(teams))}) GROUP BY player_id, team ORDER BY team, 2",
+            [season, week, *sorted(teams)],
+        ).fetchall()
+    finally:
+        conn.close()
+    return [{"player_id": r[0], "player_name": r[1] or r[0], "team": r[2], "position": r[3]} for r in rows]

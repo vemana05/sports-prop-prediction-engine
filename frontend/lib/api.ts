@@ -15,6 +15,7 @@ import type {
   ParlaysResponse,
   Performance,
   ScheduleDay,
+  NflPlayers,
   NflWarming,
   NflWeek,
   ReplaceResponse,
@@ -88,6 +89,14 @@ export const useLegs = (league: League, filters: PoolFilters, enabled: boolean) 
     queryKey: ["legs", league, filters],
     queryFn: () => get<{ status: string; legs: Leg[] }>(`/api/legs?league=${league}&${filterQuery(filters)}`),
     placeholderData: keepPreviousData,
+    refetchInterval: pollWhileWarming,
+    enabled,
+  });
+
+export const useNflPlayers = (week: number | null, enabled: boolean) =>
+  useQuery({
+    queryKey: ["nfl-players", week],
+    queryFn: () => get<NflPlayers>(`/api/nfl/players${week ? `?week=${week}` : ""}`),
     refetchInterval: pollWhileWarming,
     enabled,
   });

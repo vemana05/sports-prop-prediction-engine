@@ -8,6 +8,7 @@ import { BetSlip, type SlipNotice } from "./bet-slip";
 import { EarlySeasonBanner } from "./early-season-banner";
 import { LimitBanner } from "./loss-limits";
 import { ManualPicker } from "./manual-picker";
+import { NflManualPicker } from "./nfl-manual-picker";
 import { SideSelector } from "./side-selector";
 import { CourtDivider } from "./court-divider";
 import { LeagueToggle } from "./league-toggle";
@@ -17,7 +18,7 @@ import { TierSelector } from "./tier-selector";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { replaceLeg, scoreParlay, useLegs, useParlays, useSlate, useTiers, type PoolFilters } from "@/lib/api";
+import { replaceLeg, scoreParlay, useLegs, useNflPlayers, useParlays, useSlate, useTiers, type PoolFilters } from "@/lib/api";
 import { clockTime, money, pct, slateDate } from "@/lib/format";
 import { useStored } from "@/lib/storage";
 import { cn } from "@/lib/utils";
@@ -103,13 +104,15 @@ export function Builder() {
     if (only && games.some((g) => g.game_id === only)) setExcludedGames(games.map((g) => g.game_id).filter((id) => id !== only));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slate.data]);
-  const legsQuery = useLegs(league, filters, mode === "manual");
+  const legsQuery = useLegs(league, filters, mode === "manual" && league === "nba");
+  const nflPlayers = useNflPlayers(nflWeek, mode === "manual" && league === "nfl");
   const data = parlaysQuery.data;
   const loading = !data || data.status === "warming" || data.status === "idle";
 
   const manualQuery = useQuery({
-    queryKey: ["score", picked, tier, bankroll],
-    queryFn: () => scoreParlay({ leg_ids: picked, tier, bankroll }).then((r) => r.parlay),
+    queryKey: ["score", league, nflWeek, picked, tier, bankroll],
+    queryFn: () =>
+      scoreParlay({ league, week: nflWeek, leg_ids: picked, tier, bankroll, name: "Your parlay" }).then((r) => r.parlay),
     enabled: mode === "manual" && picked.length > 0,
     placeholderData: (prev) => prev,
   });
@@ -213,7 +216,7 @@ export function Builder() {
     prices: league === "nfl" ? prices : undefined,
     onPrice: league === "nfl" ? setPrice : undefined,
     legAction: mode === "manual" ? ("remove" as const) : ("veto" as const),
-    onLegAction: mode === "manual" ? (l: Leg) => setPicked(picked.filter((id) => id !== l.id)) : veto,
+    onLegAction: mode === "manual" ? (l: Leg) => setPicked(picked.filter((id) => id !== baseId(l))) : veto,
     busyLegId,
     emptyText: mode === "manual" ? "Add legs from the list to score them." : "Pick a suggested parlay to load it here.",
   };
@@ -221,7 +224,7 @@ export function Builder() {
   return (
     <div className="mx-auto max-w-[1600px] px-4 pb-28 pt-4 lg:px-6 lg:pb-10">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-border pb-4">
-        <LeagueToggle value={league} onChange={(l) => { setLeague(l); setSelectedId(null); setExcludedGames([]); resetEdits(); }} />
+        <LeagueToggle value={league} onChange={(l) => { setLeague(l); setSelectedId(null); setExcludedGames([]); setPicked([]); resetEdits(); }} />
         <SlateSummary league={league} slate={slate.data} />
         <div className="ml-auto">
           <BankrollInput value={bankroll} onChange={setBankroll} />
@@ -237,7 +240,7 @@ export function Builder() {
           {league === "nfl" ? (
             <WeekPicker
               slate={slate.data}
-              onChange={(w) => { setWeek(w); setSelectedId(null); setExcludedGames([]); setPrices({}); resetEdits(); }}
+              onChange={(w) => { setWeek(w); setSelectedId(null); setExcludedGames([]); setPrices({}); setPicked([]); resetEdits(); }}
             />
           ) : (
             <section>
@@ -278,7 +281,24 @@ export function Builder() {
           {league === "nba" && <EarlySeasonBanner className="mb-3" />}
           <LimitBanner className="mb-3" />
 
-          {mode === "manual" ? (
+          {mode === "manual" && league === "nfl" ? (
+            <>
+              <p className="mb-3 text-sm text-muted">
+                Pick any player and market at any ladder value, or type a line, over or under. Legs are scored by the same
+                engine as the suggestions: model hit chance per leg and for the parlay with correlation, plus game-script notes.
+                Type the book's American odds on each leg in the slip for combined odds, EV and a stake (30% shrink toward the
+                book, capped at {TIER_LABEL[tier]}'s maximum, zeroed by the data check).{" "}
+                <span className="font-medium text-ink">These probabilities are untested against real NFL lines.</span>
+              </p>
+              <NflManualPicker
+                data={nflPlayers.data}
+                loading={!nflPlayers.data || nflPlayers.data.status === "warming"}
+                picked={picked}
+                onAdd={(id) => !picked.includes(id) && setPicked([...picked, id])}
+                excludedGames={excludedGames}
+              />
+            </>
+          ) : mode === "manual" ? (
             <>
               <p className="mb-3 text-sm text-muted">
                 Pick any legs. They're scored by the same engine as the suggestions, with the stake capped at {TIER_LABEL[tier]}'s
@@ -338,10 +358,10 @@ export function Builder() {
               </div>
 
               <div className="mt-6 flex flex-wrap items-center gap-3">
-                <Button onClick={() => setMode("manual")} disabled={data?.status !== "ready" || league === "nfl"}>Build my own</Button>
+                <Button onClick={() => setMode("manual")} disabled={data?.status !== "ready"}>Build my own</Button>
                 <span className="text-sm text-muted">
                   {league === "nfl"
-                    ? "Not available for NFL yet. Veto legs in a suggestion to reshape it."
+                    ? "Pick any player, market, line and side; probabilities are untested against real NFL lines."
                     : "Pick your own legs and score them with the same engine."}
                 </span>
               </div>

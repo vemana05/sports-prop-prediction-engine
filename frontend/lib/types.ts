@@ -42,7 +42,34 @@ export interface Leg {
   priced?: boolean;
   vig_removed?: boolean;
   under_american?: number | null;
+  over_american?: number | null;
   warnings?: string[];
+}
+
+/** NFL Build my own: one projected player and each market's ladder. */
+export interface NflPickPlayer {
+  player_id: string;
+  player_name: string;
+  position: string;
+  team: string;
+  opponent?: string;
+  game_id?: string;
+  matchup?: string;
+  tip_utc?: string | null;
+  injury: string | null;
+  out: boolean;
+  markets: Record<string, { mean: number; ladder: { rung: number; line: number; p_over: number }[] }>;
+}
+
+export interface NflPlayers {
+  status: string;
+  message?: string;
+  week?: number;
+  players: NflPickPlayer[];
+  out: NflPickPlayer[];
+  markets: string[];
+  market_labels: Record<string, string>;
+  untested_note: string;
 }
 
 /** A sportsbook price typed into the slip for one NFL leg. */

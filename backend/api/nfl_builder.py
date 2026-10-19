@@ -5,10 +5,15 @@ NBA parlay/leg payloads with prices optional. Never calls The Odds API.
 Builds synchronously on first request for a week (about a second once the
 ladder calibrators are cached) and refreshes after POOL_TTL_S, so a new
 injury report or projection recompute shows up within the hour.
+
+"Build my own" (players_json + custom legs in `resolve`): any projected
+player, market, line and side, scored by the same engine. A leg id not in
+the ladder pool is parsed as player-market-side-line and built on demand.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import threading
 import time
@@ -17,7 +22,7 @@ from dataclasses import dataclass, field
 from fastapi import HTTPException
 
 from backend.parlay import nfl_legs, nfl_search
-from backend.parlay.nfl_legs import MARKET_ABBR, NflLeg, UNTESTED_NOTE
+from backend.parlay.nfl_legs import LADDERS, MARKET_ABBR, NflLeg, UNTESTED_NOTE, rung_line
 from backend.parlay.search import SearchReport, in_tier_range, leg_id
 
 POOL_TTL_S = 30 * 60
@@ -32,6 +37,7 @@ class WeekPool:
     meta: dict
     built_at: float
     legs_by_id: dict[str, NflLeg] = field(default_factory=dict)
+    players: dict[str, dict] = field(default_factory=dict)
     searches: dict[tuple, tuple[list[nfl_search.NflParlay], SearchReport]] = field(default_factory=dict)
 
 
@@ -54,6 +60,7 @@ class NflSlate:
             built = nfl_legs.build_pool(week)
             wp = WeekPool(week=built["week"], legs=built["legs"], games=built["games"], meta=built, built_at=time.time())
             wp.legs_by_id = {leg_id(l): l for l in wp.legs}
+            wp.players = built.get("players", {})
             self._pools[week] = self._pools[wp.week] = wp
             return wp
 
@@ -74,12 +81,14 @@ def american(d: float) -> int:
 
 def leg_label(l: NflLeg) -> str:
     unit = MARKET_ABBR[l.market]
-    return f"{l.rung}+ {unit}" if l.rung is not None else f"Over {l.line:g} {unit}"
+    if l.rung is not None:
+        return f"{l.rung}+ {unit}"
+    return f"{l.side.capitalize()} {l.line:g} {unit}"
 
 
 def leg_json(l: NflLeg) -> dict:
     unit = MARKET_ABBR[l.market]
-    need = f"{l.rung}+" if l.rung is not None else f"over {l.line:g}"
+    need = f"{l.rung}+" if l.rung is not None else f"{l.side} {l.line:g}"
     return {
         "id": leg_id(l),
         "base_id": l.base_id or leg_id(l),
@@ -92,7 +101,7 @@ def leg_json(l: NflLeg) -> dict:
         "game_id": l.game_id,
         "tip_utc": l.kickoff_utc,
         "market": l.market,
-        "side": "over",
+        "side": l.side,
         "line": l.line,
         "rung": l.rung,
         "label": leg_label(l),
@@ -104,6 +113,7 @@ def leg_json(l: NflLeg) -> dict:
         "decimal_odds": l.decimal_odds if l.priced else None,
         "american_odds": american(l.decimal_odds) if l.priced else None,
         "under_american": american(l.under_price) if l.under_price else None,
+        "over_american": american(l.over_price) if l.over_price else None,
         "predicted_mean": l.predicted_mean,
         "reason": f"Model projects {l.predicted_mean:.1f} {unit}; needs {need}",
         "headshot_url": None,
@@ -164,19 +174,59 @@ def slate_json(wp: WeekPool) -> dict:
     }
 
 
+MAX_CUSTOM_LINE = {"passing_yards": 600, "rushing_yards": 300, "receiving_yards": 300, "receptions": 25}
+
+
+def parse_leg_id(i: str) -> tuple[str, str, str, float] | None:
+    """player-market-side-line (NFL player ids contain hyphens, so split from the right)."""
+    parts = i.rsplit("-", 3)
+    if len(parts) != 4:
+        return None
+    try:
+        return parts[0], parts[1], parts[2], float(parts[3])
+    except ValueError:
+        return None
+
+
+def custom_leg(wp: WeekPool, player_id: str, market: str, side: str, line: float) -> NflLeg:
+    """A leg off the ladder pool: any projected player, line and side."""
+    out = next((p for p in wp.meta.get("out", []) if p["player_id"] == player_id), None)
+    if out:
+        raise HTTPException(422, f"{out['player_name']} is listed Out this week.")
+    player = wp.players.get(player_id)
+    if player is None:
+        raise HTTPException(409, f"Player {player_id} isn't in this week's pool (game started, or projections refreshed?).")
+    if market not in player["means"]:
+        raise HTTPException(422, f"{player['player_name']} has no {MARKET_ABBR.get(market, market)} projection this week.")
+    if side not in ("over", "under"):
+        raise HTTPException(422, "side must be over or under")
+    if not (0 < line <= MAX_CUSTOM_LINE[market]) or line != line:
+        raise HTTPException(422, f"{player['player_name']}: line {line:g} is out of range for {MARKET_ABBR[market]}.")
+    rung = next((r for r in LADDERS[market] if rung_line(r) == line), None)
+    m = wp.meta
+    return nfl_legs.make_leg(player, market, side, line, m["spreads"], m["calibrators"], m["narrow"], rung=rung)
+
+
+def find_leg(wp: WeekPool, i: str) -> NflLeg:
+    if i in wp.legs_by_id:
+        return wp.legs_by_id[i]
+    parsed = parse_leg_id(i)
+    if parsed is None or parsed[1] not in MARKET_ABBR:
+        raise HTTPException(409, f"This leg isn't in this week's pool any more (projections refreshed?): {i}")
+    return custom_leg(wp, *parsed)
+
+
 def resolve(wp: WeekPool, ids: list[str], prices: dict[str, dict]) -> list[NflLeg]:
-    """Pool legs by base id, with any typed line/price applied."""
-    missing = [i for i in ids if i not in wp.legs_by_id]
-    if missing:
-        raise HTTPException(409, f"These legs aren't in this week's pool any more (projections refreshed?): {', '.join(missing)}")
+    """Pool or custom legs by base id, with any typed line/price applied."""
     out = []
     for i in ids:
-        leg, p = wp.legs_by_id[i], prices.get(i) or {}
+        leg, p = find_leg(wp, i), prices.get(i) or {}
         if any(p.get(k) not in (None, "") for k in ("line", "over", "under")):
             try:
                 leg = nfl_search.apply_price(leg, p.get("line"), p.get("over"), p.get("under"))
             except ValueError as e:
                 raise HTTPException(422, f"{leg.player_name}: {e}")
+            leg = dataclasses.replace(leg, base_id=i)
         out.append(leg)
     seen = set()
     for l in out:
@@ -184,6 +234,33 @@ def resolve(wp: WeekPool, ids: list[str], prices: dict[str, dict]) -> list[NflLe
             raise HTTPException(422, f"{l.player_name} already has a {MARKET_ABBR[l.market]} leg in this parlay.")
         seen.add((l.player_id_nba, l.market))
     return out
+
+
+def players_json(wp: WeekPool) -> dict:
+    """Every projected player with each market's ladder (model P(over) per
+    rung), plus the week's Out players (shown disabled)."""
+    games = wp.games
+    players = []
+    for p in wp.players.values():
+        markets = {}
+        for market, mean in p["means"].items():
+            ladder = []
+            for rung in LADDERS[market]:
+                leg = custom_leg(wp, p["player_id"], market, "over", rung_line(rung))
+                ladder.append({"rung": rung, "line": leg.line, "p_over": leg.p_hit()})
+            markets[market] = {"mean": mean, "ladder": ladder}
+        g = games.get(p["game_id"], {})
+        players.append({
+            "player_id": p["player_id"], "player_name": p["player_name"], "position": p["position"],
+            "team": p["team"], "opponent": p["opponent"], "game_id": p["game_id"],
+            "matchup": f"{g.get('away', '?')} @ {g.get('home', '?')}", "tip_utc": p["kickoff_utc"],
+            "injury": "Questionable" if p["questionable"] else None, "out": False, "markets": markets,
+        })
+    order = {"QB": 0, "RB": 1, "WR": 2, "TE": 3}
+    players.sort(key=lambda x: (x["tip_utc"] or "", x["game_id"], x["team"], order.get(x["position"], 9), x["player_name"]))
+    out = [{**o, "out": True, "injury": "Out", "markets": {}} for o in wp.meta.get("out", [])]
+    return {"status": "ready", "week": wp.week, "players": players, "out": out, "markets": list(MARKET_ABBR),
+            "market_labels": MARKET_ABBR, "untested_note": UNTESTED_NOTE}
 
 
 def report_json(r: SearchReport) -> dict:

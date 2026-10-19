@@ -67,15 +67,25 @@ def target_p(tier_cfg: dict) -> float:
 
 # ---- notes -----------------------------------------------------------------------
 
+def _script_lean(l: NflLeg) -> str | None:
+    """Which game script a leg needs: "pass" (passing yards or WR/TE catches
+    over, RB rushing under) or "run" (the reverse). None if neither."""
+    passing = l.market in PASS_HEAVY or (l.market in CATCH_MARKETS and l.position in ("WR", "TE"))
+    running = l.market == "rushing_yards" and l.position == "RB"
+    if not (passing or running):
+        return None
+    pass_lean = passing == (l.side == "over")
+    return "pass" if pass_lean else "run"
+
+
 def game_script_notes(legs: list[NflLeg], games: dict) -> list[str]:
-    """A same-game mix of pass-heavy legs (passing yards, WR/TE catches) and
-    run-heavy legs (RB rushing yards) depends on how the game unfolds."""
+    """A same-game mix of legs that need a pass-heavy script (passing yards,
+    WR/TE catches over; RB rushing under) and legs that need a run-heavy one
+    (the reverse) depends on how the game unfolds."""
     notes = []
     for gid in dict.fromkeys(l.game_id for l in legs):
-        in_game = [l for l in legs if l.game_id == gid]
-        passing = any(l.market in PASS_HEAVY or (l.market in CATCH_MARKETS and l.position in ("WR", "TE")) for l in in_game)
-        running = any(l.market == "rushing_yards" and l.position == "RB" for l in in_game)
-        if passing and running:
+        leans = {_script_lean(l) for l in legs if l.game_id == gid}
+        if {"pass", "run"} <= leans:
             g = games.get(gid, {})
             matchup = f"{g.get('away', '?')} @ {g.get('home', '?')}"
             notes.append(
@@ -130,13 +140,16 @@ def parse_line(text: str | float) -> float:
 
 
 def apply_price(leg: NflLeg, line: str | float | None, over: float | None, under: float | None) -> NflLeg:
-    """The pool leg with a user-typed book line and/or American prices."""
+    """The pool leg with a user-typed book line and/or American prices.
+    The leg's own side's price (over, or under for an under leg) prices it;
+    the other side's is optional and only removes the vig."""
     new_line = parse_line(line) if line not in (None, "") else leg.line
     over_d = american_to_decimal(over) if over is not None else None
     under_d = american_to_decimal(under) if under is not None else None
+    own = over_d if leg.side == "over" else under_d
     return dataclasses.replace(
         leg, line=new_line, rung=leg.rung if new_line == leg.line else None,
-        over_price=over_d, under_price=under_d, decimal_odds=over_d or 0.0,
+        over_price=over_d, under_price=under_d, decimal_odds=own or 0.0,
         base_id=leg.base_id or leg_id(leg),
     )
 
