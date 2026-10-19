@@ -12,7 +12,18 @@ import os
 from dataclasses import dataclass
 
 
-def kelly_fraction() -> float:
+_kelly_override: float | None = None  # set from the Settings page (backend/api/limits.py)
+
+
+def set_kelly_fraction(value: float | None) -> None:
+    global _kelly_override
+    _kelly_override = value
+
+
+def kelly_fraction(default_only: bool = False) -> float:
+    """The Settings page's value if one is saved, else KELLY_FRACTION (0.25)."""
+    if _kelly_override is not None and not default_only:
+        return _kelly_override
     return float(os.environ.get("KELLY_FRACTION", "0.25"))
 
 
@@ -64,7 +75,7 @@ def recommend_stake(
 ) -> StakeRecommendation:
     """`p` should already be market-shrunk (Section 8 step 3) — this
     function doesn't shrink, it just sizes. Steps 4-7 of Section 8:
-    quarter Kelly, capped by the tier's max stake, EV<=0 -> $0, rounded,
+    fractional Kelly (kelly_fraction(), quarter by default), capped by the tier's max stake, EV<=0 -> $0, rounded,
     never below the book's minimum (if given)."""
     ev = ev_per_dollar(p, decimal_odds)
     f_star = kelly_f_star(p, decimal_odds)

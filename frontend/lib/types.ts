@@ -141,6 +141,7 @@ export interface Bet {
   model_p: number;
   stake: number;
   paper: boolean;
+  bonus: boolean;
   result: BetResult;
   settled_at: string | null;
   profit: number;
@@ -451,4 +452,41 @@ export interface EarlySeason {
   games_remaining: number;
   teams_below: string[];
   games_played: Record<string, number>;
+}
+
+export type LimitPeriod = "daily" | "weekly" | "monthly";
+export type LimitLevel = "none" | "ok" | "warn" | "hit";
+
+export interface LossLimit {
+  period: LimitPeriod;
+  limit: number | null;
+  pending: { amount: number | null; effective_at: string } | null;
+  used: number | null;
+  level: LimitLevel;
+  start: string;
+  end: string;
+  lost: number;
+  won: number;
+  net_loss: number;
+  bonus_bets: number;
+  bonus_winnings: number;
+}
+
+export interface LimitStatus {
+  now: string;
+  limits: LossLimit[];
+  level: "ok" | "warn" | "hit";
+  hit: LimitPeriod[];
+  paused_until: string | null;
+  warn_at: number;
+  raise_delay_hours: number;
+  pause_days: number[];
+}
+
+export interface AppSettings {
+  kelly_fraction: number;
+  kelly_default: number;
+  tiers: Record<TierName, TierConfig>;
+  api_keys: { name: string; label: string; status: "set" | "missing" }[];
+  llm_features: { name: string; label: string; enabled: boolean }[];
 }

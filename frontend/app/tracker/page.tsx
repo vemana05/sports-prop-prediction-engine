@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { LimitBars } from "@/components/loss-limits";
 import { TierBadge } from "@/components/tier-badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -48,6 +49,7 @@ export default function TrackerPage() {
           ? "Showing paper bets only — tracked without real money. Bets you log from the slip while this is on are paper bets."
           : "Showing real-money bets. Turn on paper trading to track picks without staking anything."}
       </p>
+      {!paper && <LimitBars />}
 
       {error ? (
         <p className="mt-6 text-danger-ink">Couldn't load bets: {(error as Error).message}</p>

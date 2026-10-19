@@ -1,5 +1,8 @@
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import type {
+  AppSettings,
+  LimitPeriod,
+  LimitStatus,
   Bet,
   BetResult,
   DataSources,
@@ -28,7 +31,7 @@ async function get<T>(path: string): Promise<T> {
   return res.json();
 }
 
-export async function send<T>(method: "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
+export async function send<T>(method: "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
     headers: body ? { "Content-Type": "application/json" } : undefined,
@@ -123,9 +126,12 @@ export const useBets = () => useQuery({ queryKey: ["bets"], queryFn: () => get<{
 
 export function useBetMutations() {
   const qc = useQueryClient();
-  const done = () => qc.invalidateQueries({ queryKey: ["bets"] });
+  const done = () => {
+    qc.invalidateQueries({ queryKey: ["bets"] });
+    qc.invalidateQueries({ queryKey: ["limits"] });
+  };
   return {
-    log: useMutation({ mutationFn: (bet: Omit<Bet, "id" | "created_at" | "result" | "settled_at" | "profit">) => send<Bet>("POST", "/api/bets", bet), onSuccess: done }),
+    log: useMutation({ mutationFn: (bet: Omit<Bet, "id" | "created_at" | "result" | "settled_at" | "profit" | "bonus"> & { bonus?: boolean; confirm_over_limit?: boolean }) => send<Bet>("POST", "/api/bets", bet), onSuccess: done }),
     settle: useMutation({ mutationFn: ({ id, result }: { id: number; result: BetResult }) => send<Bet>("PATCH", `/api/bets/${id}`, { result }), onSuccess: done }),
     remove: useMutation({ mutationFn: (id: number) => send<{ ok: true }>("DELETE", `/api/bets/${id}`), onSuccess: done }),
   };
@@ -173,3 +179,29 @@ export const useEarlySeason = (enabled = true) =>
     retry: 4, // 503 while a data job holds the warehouse
     retryDelay: 2500,
   });
+
+export const useLimits = () =>
+  useQuery({ queryKey: ["limits"], queryFn: () => get<LimitStatus>("/api/limits"), refetchInterval: 60_000 });
+
+export const useSettings = () => useQuery({ queryKey: ["settings"], queryFn: () => get<AppSettings>("/api/settings") });
+
+export function useSettingsMutations() {
+  const qc = useQueryClient();
+  const limitsDone = (data: LimitStatus) => qc.setQueryData(["limits"], data);
+  return {
+    setLimit: useMutation({
+      mutationFn: ({ period, amount }: { period: LimitPeriod; amount: number | null }) => send<LimitStatus>("PUT", `/api/limits/${period}`, { amount }),
+      onSuccess: limitsDone,
+    }),
+    cancelPending: useMutation({ mutationFn: (period: LimitPeriod) => send<LimitStatus>("DELETE", `/api/limits/${period}/pending`), onSuccess: limitsDone }),
+    pause: useMutation({ mutationFn: (days: number) => send<LimitStatus>("POST", "/api/limits/pause", { days }), onSuccess: limitsDone }),
+    setKelly: useMutation({
+      mutationFn: (kelly_fraction: number) => send<AppSettings>("PUT", "/api/settings/kelly", { kelly_fraction }),
+      onSuccess: (data) => {
+        qc.setQueryData(["settings"], data);
+        qc.invalidateQueries({ queryKey: ["parlays"] });
+        qc.invalidateQueries({ queryKey: ["score"] });
+      },
+    }),
+  };
+}

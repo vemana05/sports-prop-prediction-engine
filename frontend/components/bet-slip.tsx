@@ -6,9 +6,10 @@ import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
 import { LegRow } from "./leg-row";
 import { TierBadge } from "./tier-badge";
+import { LimitBanner, limitNames } from "./loss-limits";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useBetMutations } from "@/lib/api";
+import { useBetMutations, useLimits } from "@/lib/api";
 import { american, evPerDollar, money, pct } from "@/lib/format";
 import { usePaperMode } from "@/lib/storage";
 import type { League, Leg, LegPrice, Parlay, TierName } from "@/lib/types";
@@ -245,13 +246,20 @@ function LogBet({ parlay, tier, league }: { parlay: Parlay; tier: TierName; leag
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [logged, setLogged] = useState<string | null>(null);
+  const [bonus, setBonus] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
   const { log } = useBetMutations();
+  const { data: limitStatus } = useLimits();
   const stake = Number(draft.replace(/[$,\s]/g, ""));
   const valid = Number.isFinite(stake) && stake > 0;
   // An unpriced NFL parlay can only be paper-traded, at the model's fair odds.
   const unpriced = parlay.decimal_odds == null;
   const fair = (p: number) => Math.round(p >= 0.5 ? -100 * p / (1 - p) : 100 * (1 - p) / p);
   const asPaper = paper || unpriced;
+  // Real bets only: a break blocks them; a hit limit needs an explicit, named confirmation. Paper is never blocked.
+  const pausedUntil = asPaper ? null : limitStatus?.paused_until ?? null;
+  const hitLimits = asPaper ? [] : limitStatus?.hit ?? [];
+  const needsConfirm = hitLimits.length > 0 && !confirmed;
 
   if (logged === parlay.id)
     return (
@@ -270,6 +278,7 @@ function LogBet({ parlay, tier, league }: { parlay: Parlay; tier: TierName; leag
           className="w-full"
           onClick={() => {
             setDraft(parlay.stake > 0 ? String(parlay.stake) : "");
+            setConfirmed(false);
             setOpen(true);
           }}
         >
@@ -283,7 +292,7 @@ function LogBet({ parlay, tier, league }: { parlay: Parlay; tier: TierName; leag
       className="space-y-2 border-t border-border px-5 py-3"
       onSubmit={(e) => {
         e.preventDefault();
-        if (!valid) return;
+        if (!valid || pausedUntil || needsConfirm) return;
         log.mutate(
           {
             league,
@@ -295,6 +304,8 @@ function LogBet({ parlay, tier, league }: { parlay: Parlay; tier: TierName; leag
             model_p: parlay.p_hit,
             stake,
             paper: asPaper,
+            bonus: !asPaper && bonus,
+            confirm_over_limit: !asPaper && confirmed,
           },
           { onSuccess: () => { setLogged(parlay.id); setOpen(false); } },
         );
@@ -319,12 +330,25 @@ function LogBet({ parlay, tier, league }: { parlay: Parlay; tier: TierName; leag
         <input type="checkbox" checked={asPaper} disabled={unpriced} onChange={(e) => setPaper(e.target.checked)} className="h-4 w-4 accent-[var(--accent)]" />
         Paper trade (no real money)
       </label>
+      {!asPaper && (
+        <label className="flex items-center gap-2 text-xs">
+          <input type="checkbox" checked={bonus} onChange={(e) => setBonus(e.target.checked)} className="h-4 w-4 accent-[var(--accent)]" />
+          Bonus bet (the book's credit; left out of loss limits)
+        </label>
+      )}
+      {!asPaper && <LimitBanner status={limitStatus} compact />}
+      {hitLimits.length > 0 && !pausedUntil && (
+        <label className="flex items-start gap-2 rounded-control border border-danger/60 bg-danger/5 p-2 text-xs">
+          <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--tier-danger)]" />
+          <span>I know I've hit my {limitNames(hitLimits)} and want to log this real bet anyway.</span>
+        </label>
+      )}
       {unpriced && <p className="text-xs text-muted">No book odds typed, so this logs as a paper bet at the model's fair odds.</p>}
       {parlay.stake === 0 && <p className="text-xs text-muted">The model suggests $0 here. Logging it anyway is your call.</p>}
       {log.error && <p className="text-xs text-danger-ink">{(log.error as Error).message}</p>}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>Cancel</Button>
-        <Button type="submit" variant="primary" size="sm" disabled={!valid || log.isPending}>
+        <Button type="submit" variant="primary" size="sm" disabled={!valid || log.isPending || !!pausedUntil || needsConfirm}>
           {asPaper ? "Log paper bet" : "Log bet"}
         </Button>
       </div>

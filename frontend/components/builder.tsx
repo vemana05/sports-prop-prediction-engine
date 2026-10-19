@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { BankrollInput } from "./bankroll-input";
 import { BetSlip, type SlipNotice } from "./bet-slip";
 import { EarlySeasonBanner } from "./early-season-banner";
+import { LimitBanner } from "./loss-limits";
 import { ManualPicker } from "./manual-picker";
 import { SideSelector } from "./side-selector";
 import { CourtDivider } from "./court-divider";
@@ -275,6 +276,7 @@ export function Builder() {
           <CourtDivider league={league} />
           {league === "nfl" && slate.data?.status === "ready" && <NflBanner slate={slate.data} />}
           {league === "nba" && <EarlySeasonBanner className="mb-3" />}
+          <LimitBanner className="mb-3" />
 
           {mode === "manual" ? (
             <>

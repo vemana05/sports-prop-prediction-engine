@@ -5,6 +5,8 @@ Kept in its own small SQLite file, not the DuckDB warehouse — the API
 deliberately never holds the warehouse open (see slate.py), and a handful
 of hand-logged bets don't need it. Paper bets live in the same table with
 `paper = 1` so "paper trading" is a view, not a separate system.
+Bonus bets (a sportsbook's free-bet credit) are real bets with `bonus = 1`:
+losing one costs nothing, and loss limits (limits.py) leave them out.
 """
 
 from __future__ import annotations
@@ -31,7 +33,8 @@ CREATE TABLE IF NOT EXISTS bets (
     stake REAL NOT NULL,
     paper INTEGER NOT NULL DEFAULT 0,
     result TEXT NOT NULL DEFAULT 'pending',
-    settled_at TEXT
+    settled_at TEXT,
+    bonus INTEGER NOT NULL DEFAULT 0
 )
 """
 
@@ -41,6 +44,8 @@ def _conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute(_SCHEMA)
+    if "bonus" not in {c[1] for c in conn.execute("PRAGMA table_info(bets)")}:
+        conn.execute("ALTER TABLE bets ADD COLUMN bonus INTEGER NOT NULL DEFAULT 0")
     return conn
 
 
@@ -49,11 +54,12 @@ def _now() -> str:
 
 
 def profit(bet: dict) -> float:
-    """Net result of a settled bet; 0 while pending or on a push."""
+    """Net result of a settled bet; 0 while pending or on a push. A lost
+    bonus bet is 0 too: its stake was the book's credit, not your money."""
     if bet["result"] == "won":
         return round(bet["stake"] * (bet["decimal_odds"] - 1), 2)
     if bet["result"] == "lost":
-        return -bet["stake"]
+        return 0.0 if bet.get("bonus") else -bet["stake"]
     return 0.0
 
 
@@ -61,6 +67,7 @@ def _row(r: sqlite3.Row) -> dict:
     bet = dict(r)
     bet["legs"] = json.loads(bet.pop("legs_json"))
     bet["paper"] = bool(bet["paper"])
+    bet["bonus"] = bool(bet["bonus"])
     bet["profit"] = profit(bet)
     return bet
 
@@ -73,10 +80,11 @@ def list_bets() -> list[dict]:
 def add_bet(bet: dict) -> dict:
     with _conn() as conn:
         cur = conn.execute(
-            """INSERT INTO bets (created_at, league, tier, name, legs_json, decimal_odds, american_odds, model_p, stake, paper)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO bets (created_at, league, tier, name, legs_json, decimal_odds, american_odds, model_p, stake, paper, bonus)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [_now(), bet["league"], bet["tier"], bet["name"], json.dumps(bet["legs"]), bet["decimal_odds"],
-             bet["american_odds"], bet["model_p"], bet["stake"], int(bet["paper"])],
+             bet["american_odds"], bet["model_p"], bet["stake"], int(bet["paper"]),
+             int(bet.get("bonus", False) and not bet["paper"])],
         )
         return _row(conn.execute("SELECT * FROM bets WHERE id = ?", [cur.lastrowid]).fetchone())
 

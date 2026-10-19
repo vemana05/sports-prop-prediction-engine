@@ -26,6 +26,7 @@ odds/EV/stake only for prices the user types into the slip.
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime
 from pathlib import Path
 
@@ -36,7 +37,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from backend.api import data_sources, nfl_builder, replay as replay_mod, tracker
+from backend.api import data_sources, limits, nfl_builder, replay as replay_mod, tracker
 from backend.predict import early_season, nfl_projections, schedule_projections
 from backend.bankroll.kelly import recommend_stake
 from backend.parlay import nfl_search
@@ -67,6 +68,7 @@ def _nfl_pool(week: int | None) -> nfl_builder.WeekPool:
 
 @app.on_event("startup")
 def _warm() -> None:
+    limits.load_kelly()
     SLATE.start_build()
 
 
@@ -537,6 +539,8 @@ class BetIn(BaseModel):
     model_p: float = Field(ge=0, le=1)
     stake: float = Field(gt=0)
     paper: bool = False
+    bonus: bool = False  # a sportsbook bonus bet: real, but left out of loss limits
+    confirm_over_limit: bool = False  # the user confirmed logging past a hit loss limit
 
 
 class Settle(BaseModel):
@@ -550,7 +554,16 @@ def bets() -> dict:
 
 @app.post("/api/bets")
 def log_bet(bet: BetIn) -> dict:
-    return tracker.add_bet(bet.model_dump())
+    """Paper bets are never blocked. Real ones are refused during a break
+    (423), and need `confirm_over_limit` once a loss limit is hit (409)."""
+    if not bet.paper:
+        st = limits.status()
+        if st["paused_until"]:
+            raise HTTPException(423, f"Real-bet logging is paused until {st['paused_until']} (you chose a break). Paper bets still work.")
+        if st["hit"] and not bet.confirm_over_limit:
+            names = " and ".join(f"{p} loss limit" for p in st["hit"])
+            raise HTTPException(409, f"You've hit your {names}. Confirm to log this real bet anyway.")
+    return tracker.add_bet(bet.model_dump(exclude={"confirm_over_limit"}))
 
 
 @app.patch("/api/bets/{bet_id}")
@@ -566,3 +579,74 @@ def delete(bet_id: int) -> dict:
     if not tracker.delete_bet(bet_id):
         raise HTTPException(404)
     return {"ok": True}
+
+
+# --- Settings (spec 10.4 G) ---------------------------------------------------
+
+# Key names only: the API reports "set" or "missing", never a value.
+API_KEYS = [
+    ("ODDS_API_KEY", "The Odds API (NBA props)"),
+    ("SECONDARY_ODDS_API_KEY", "The Odds API, second key"),
+    ("ODDSPAPI_API_KEY", "OddsPapi (NFL lines)"),
+    ("BALLDONTLIE_API_KEY", "balldontlie"),
+    ("ANTHROPIC_API_KEY", "Anthropic (optional LLM features)"),
+]
+LLM_FLAGS = [("ENABLE_LLM_EXPLANATIONS", "LLM explanations"), ("ENABLE_LLM_NEWS_FLAGS", "LLM news flags")]
+
+
+def _flag_on(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+@app.get("/api/settings")
+def settings() -> dict:
+    return {
+        "kelly_fraction": limits.get_kelly(),
+        "kelly_default": limits.KELLY_DEFAULT,
+        "tiers": load_tiers(),
+        "api_keys": [{"name": n, "label": label, "status": "set" if os.environ.get(n, "").strip() else "missing"} for n, label in API_KEYS],
+        "llm_features": [{"name": n, "label": label, "enabled": _flag_on(n)} for n, label in LLM_FLAGS],
+    }
+
+
+class KellyIn(BaseModel):
+    kelly_fraction: float = Field(gt=0, le=1)
+
+
+@app.put("/api/settings/kelly")
+def set_kelly(body: KellyIn) -> dict:
+    limits.set_kelly(body.kelly_fraction)
+    for wp in nfl_builder.NFL_SLATE._pools.values():
+        wp.searches.clear()  # cached NFL stakes were sized with the old fraction
+    return settings()
+
+
+@app.get("/api/limits")
+def loss_limits() -> dict:
+    return limits.status()
+
+
+class LimitIn(BaseModel):
+    amount: float | None = Field(None, gt=0, le=10_000_000)  # null removes the limit (after the delay)
+
+
+@app.put("/api/limits/{period}")
+def set_loss_limit(period: Literal["daily", "weekly", "monthly"], body: LimitIn) -> dict:
+    limits.set_limit(period, body.amount)
+    return limits.status()
+
+
+@app.delete("/api/limits/{period}/pending")
+def cancel_loss_limit_change(period: Literal["daily", "weekly", "monthly"]) -> dict:
+    limits.cancel_pending(period)
+    return limits.status()
+
+
+class PauseIn(BaseModel):
+    days: Literal[1, 7, 30]
+
+
+@app.post("/api/limits/pause")
+def take_a_break(body: PauseIn) -> dict:
+    limits.pause(body.days)
+    return limits.status()
