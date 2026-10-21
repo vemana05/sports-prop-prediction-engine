@@ -122,8 +122,11 @@ def fetch_report(timestamp: datetime) -> pd.DataFrame:
     out = df.rename(columns=_COLUMN_MAP)[list(_COLUMN_MAP.values())]
     # PDF table extraction occasionally yields blank rows (header/separator
     # lines with no player) — drop anything without a player name rather than
-    # let it violate the NOT NULL constraint.
-    out = out[out["player_name_raw"].notna() & (out["player_name_raw"].str.strip() != "")]
+    # let it violate the NOT NULL constraint. Early-day reports list every team
+    # as "NOT YET SUBMITTED" with no players at all, so the column comes back
+    # all-NaN (float64) — fill and cast before .str or the accessor raises.
+    names = out["player_name_raw"]
+    out = out[names.notna() & (names.fillna("").astype(str).str.strip() != "")]
     out["game_date"] = pd.to_datetime(out["game_date"], errors="coerce").dt.date
     # PDF extraction also occasionally yields two rows for the same player,
     # e.g. a status line split across pages — (player_name_raw, team) is the
