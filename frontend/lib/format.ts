@@ -11,6 +11,9 @@ export const evPerDollar = (ev: number) => `${ev >= 0 ? "+" : "−"}$${Math.abs(
 export const slateDate = (iso: string) =>
   new Date(iso).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "America/New_York" });
 
+/** YYYY-MM-DD in ET, for comparing calendar days. */
+export const etDay = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+
 export const clockTime = (iso: string) =>
   new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" });
 

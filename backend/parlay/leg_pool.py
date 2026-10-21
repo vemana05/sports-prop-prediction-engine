@@ -22,7 +22,7 @@ scope decision, not a modeling limitation.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import duckdb
 import pandas as pd
@@ -118,20 +118,24 @@ def _train_points(conn):
     return model, {"sigma": sigma}
 
 
-def build_leg_pool(conn: duckdb.DuckDBPyConnection | None = None) -> list[Leg]:
+def build_leg_pool(conn: duckdb.DuckDBPyConnection | None = None, now: datetime | None = None) -> list[Leg]:
+    """Legs for events that haven't started yet: odds_snapshots keeps every
+    pull, so yesterday's games are still in it."""
     own_conn = conn is None
+    now = now or datetime.now(timezone.utc)
     conn = conn or get_connection()
     try:
         odds = conn.execute(
             """
             SELECT player_name_raw, event_id, game_id_nba, commence_time, bookmaker, line, over_price, under_price
             FROM odds_snapshots
-            WHERE market = 'player_points'
+            WHERE market = 'player_points' AND commence_time > ?
             QUALIFY ROW_NUMBER() OVER (PARTITION BY player_name_raw, event_id ORDER BY pulled_at DESC) = 1
-            """
+            """,
+            [now],
         ).fetchdf()
         if odds.empty:
-            logger.warning("leg_pool: no player_points odds in odds_snapshots yet")
+            logger.warning("leg_pool: no upcoming player_points odds in odds_snapshots")
             return []
 
         name_map = _resolve_player_names(conn, odds["player_name_raw"].unique().tolist())

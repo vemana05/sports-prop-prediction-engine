@@ -131,6 +131,8 @@ export interface SlateInfo {
   n_legs?: number;
   games?: GameInfo[];
   first_tip_utc?: string | null;
+  /** NBA: ET date (YYYY-MM-DD) of the earliest upcoming tip */
+  slate_date?: string | null;
   odds_pulled_at?: string | null;
   // NFL only
   season?: number;
@@ -361,6 +363,10 @@ export interface NflWeek {
 export interface GameInfo {
   game_id: string;
   teams: string[];
+  /** NBA: "AWAY @ HOME" once the odds event is matched to the schedule */
+  label?: string | null;
+  away?: string | null;
+  home?: string | null;
   tip_utc: string | null;
 }
 

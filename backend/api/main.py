@@ -73,6 +73,13 @@ def _warm() -> None:
     SLATE.start_build()
 
 
+@app.middleware("http")
+async def _fresh_slate(request, call_next):
+    if request.url.path.startswith("/api/"):
+        SLATE.ensure_fresh()
+    return await call_next(request)
+
+
 def american(d: float) -> int:
     return round((d - 1) * 100) if d >= 2 else round(-100 / (d - 1))
 
@@ -146,32 +153,35 @@ def _report_json(r: SearchReport) -> dict:
 
 
 def _games_json() -> list[dict]:
-    """Games in the pool with the teams that have legs in them — odds events
-    aren't always resolved to an nba game_id yet, so home/away can be
-    unknown even when the teams aren't."""
+    """Upcoming games in the pool, one per game: "away @ home" once the odds
+    event is matched to the schedule, else the teams that have legs in it."""
     teams: dict[str, set[str]] = {}
     for leg in SLATE.legs:
         teams.setdefault(leg.game_id, set()).update([leg.team] if leg.team else [])
-    for g in SLATE.games.values():
-        teams.setdefault(g.game_id, set()).update(t for t in (g.away, g.home) if t)
-    return sorted(
-        (
-            {"game_id": gid, "teams": sorted(t), "tip_utc": _iso(SLATE.games[gid].tip_utc) if gid in SLATE.games else None}
-            for gid, t in teams.items()
-        ),
-        key=lambda g: (g["tip_utc"] or "", g["teams"]),
-    )
+    out = []
+    for gid, g in SLATE.upcoming_games().items():
+        out.append({
+            "game_id": gid,
+            "teams": [g.away, g.home] if g.label else sorted(teams.get(gid, ())),
+            "away": g.away,
+            "home": g.home,
+            "label": g.label,
+            "tip_utc": _iso(g.tip_utc),
+        })
+    return sorted(out, key=lambda g: (g["tip_utc"] or "", g["teams"]))
 
 
 def _slate_json() -> dict:
-    tips = sorted(g.tip_utc for g in SLATE.games.values() if g.tip_utc)
+    games = _games_json()
+    tips = [g["tip_utc"] for g in games if g["tip_utc"]]
     return {
         "status": SLATE.status,
         "error": SLATE.error,
-        "n_games": len(SLATE.games),
-        "n_legs": len(SLATE.legs),
-        "games": _games_json(),
-        "first_tip_utc": _iso(tips[0]) if tips else None,
+        "n_games": len(games),
+        "n_legs": len(SLATE.pool()),
+        "games": games,
+        "first_tip_utc": min(tips) if tips else None,
+        "slate_date": _iso(SLATE.slate_date),
         "odds_pulled_at": _iso(SLATE.odds_pulled_at),
         "build_seconds": SLATE.build_seconds,
     }
@@ -395,20 +405,12 @@ def score(req: ScoreRequest) -> dict:
     return {"parlay": _parlay_json(c, req.bankroll, tier_cfg, "Your parlay")}
 
 
-def _slate_game_for(home: str | None, away: str | None, tip_utc: str) -> str | None:
-    """The Builder's game key for a scheduled game, if its lines are in the
-    current slate. Odds events aren't always resolved to an nba game_id, so
-    match on the teams of the slate's legs plus the same tip date."""
+def _slate_game_for(game_id: str) -> str | None:
+    """The Builder's game key for a scheduled nba game, if its lines are in
+    the current slate and it hasn't tipped."""
     if SLATE.status != "ready":
         return None
-    day = tip_utc[:10]
-    teams = {t for t in (home, away) if t}
-    for gid, game in SLATE.games.items():
-        leg_teams = {l.team for l in SLATE.legs if l.game_id == gid and l.team}
-        same_day = game.tip_utc is None or game.tip_utc.isoformat()[:10] == day
-        if leg_teams and leg_teams <= teams and same_day:
-            return gid
-    return None
+    return next((gid for gid, g in SLATE.upcoming_games().items() if g.nba_game_id == game_id), None)
 
 
 @app.get("/api/schedule")
@@ -443,7 +445,7 @@ def schedule(
     except duckdb.IOException:
         raise HTTPException(503, "The warehouse is busy (a data job or slate build is running). Try again in a few seconds.")
     for g in data["games"]:
-        g["builder_game_id"] = _slate_game_for(g["home"], g["away"], g["tip_utc"])
+        g["builder_game_id"] = _slate_game_for(g["game_id"])
         g["lines_posted"] = g["game_id"] in with_lines or g["builder_game_id"] is not None
     return {"status": "ready", "today": schedule_projections.today_et().isoformat(), **data}
 

@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { replaceLeg, scoreParlay, useLegs, useNflPlayers, useParlays, useSlate, useTiers, type PoolFilters } from "@/lib/api";
-import { clockTime, money, pct, slateDate } from "@/lib/format";
+import { clockTime, etDay, money, pct, slateDate } from "@/lib/format";
 import { useStored } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 import type { GameInfo, League, Leg, LegPrice, Parlay, SearchReport, Sides, SlateInfo, TierConfig, TierName } from "@/lib/types";
@@ -399,12 +399,13 @@ function SlateSummary({ league, slate }: { league: League; slate?: SlateInfo }) 
   if (!slate.n_games)
     return <span className="text-sm text-muted">No {league.toUpperCase()} games with odds yet</span>;
 
-  const tip = slate.first_tip_utc ? new Date(slate.first_tip_utc) : null;
-  const tonight = tip && tip.toDateString() === new Date().toDateString();
+  // slate_date is the ET date of the earliest upcoming tip (YYYY-MM-DD).
+  const day = slate.slate_date ?? (slate.first_tip_utc ? etDay(slate.first_tip_utc) : null);
+  const tonight = day === etDay(new Date().toISOString());
   return (
     <div className="flex flex-wrap items-baseline gap-x-3">
       <span className="font-medium">
-        {tonight ? "Tonight" : `Next slate: ${slateDate(slate.first_tip_utc!)}`} ·{" "}
+        {tonight ? "Tonight" : day ? `Next slate: ${slateDate(`${day}T12:00:00-05:00`)}` : "Next slate"} ·{" "}
         <span className="num text-lg font-semibold">{slate.n_games}</span> {slate.n_games === 1 ? "game" : "games"}
       </span>
       {slate.odds_pulled_at && (
@@ -433,8 +434,12 @@ function Filters({ league, games, excluded, onToggle }: { league: League; games:
                   onChange={() => onToggle(g.game_id)}
                   className="h-4 w-4 rounded accent-[var(--accent)]"
                 />
-                <span className="font-medium">{(league === "nfl" ? g.teams.join(" @ ") : g.teams.join(" · ")) || "Unmatched game"}</span>
-                {g.tip_utc && <span className="ml-auto text-xs text-muted">{clockTime(g.tip_utc)}</span>}
+                <span className="font-medium">{g.label ?? ((league === "nfl" ? g.teams.join(" @ ") : g.teams.join(" · ")) || "Unmatched game")}</span>
+                {g.tip_utc && (
+                  <span className="ml-auto whitespace-nowrap text-xs text-muted">
+                    {slateDate(g.tip_utc)} · {clockTime(g.tip_utc)}
+                  </span>
+                )}
               </label>
             </li>
           ))}

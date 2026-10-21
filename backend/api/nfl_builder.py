@@ -18,6 +18,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
@@ -55,7 +56,7 @@ class NflSlate:
     def pool(self, week: int | None) -> WeekPool:
         with self._lock:
             cached = self._pools.get(week)
-            if cached and time.time() - cached.built_at < POOL_TTL_S:
+            if cached and time.time() - cached.built_at < POOL_TTL_S and not _any_kicked_off(cached):
                 return cached
             built = nfl_legs.build_pool(week)
             wp = WeekPool(week=built["week"], legs=built["legs"], games=built["games"], meta=built, built_at=time.time())
@@ -70,6 +71,13 @@ class NflSlate:
             pool = [l for l in wp.legs if leg_id(l) not in vetoed and l.game_id not in excluded]
             wp.searches[key] = nfl_search.search(pool, tier, tier_cfg, self.corr(), 100.0, wp.games, seed=SEARCH_SEED)
         return wp.searches[key]
+
+
+def _any_kicked_off(wp: WeekPool) -> bool:
+    """A cached pool only holds games that hadn't started when it was built;
+    rebuild as soon as one kicks off rather than waiting out POOL_TTL_S."""
+    now = datetime.now(timezone.utc)
+    return any(g["kickoff_utc"] and datetime.fromisoformat(g["kickoff_utc"]).astimezone(timezone.utc) <= now for g in wp.games.values())
 
 
 NFL_SLATE = NflSlate()
