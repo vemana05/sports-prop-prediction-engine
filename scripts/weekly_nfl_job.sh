@@ -59,6 +59,48 @@ fi
 YEAR=$(date +%Y)
 if [ "$(date +%-m)" -ge 9 ]; then SEASON=$YEAR; else SEASON=$((YEAR - 1)); fi
 
+# After a late wake the Mac can be up with no network for a while (2026-10-20:
+# the closing-line step died on RemoteDisconnected). Same wait as
+# daily_odds_job.sh: up to 30 min for the containers to resolve the OddsPapi
+# host before any OddsPapi step spends a request.
+wait_for_network() {
+    echo "--- waiting for network (DNS from inside Docker) ---" | tee -a "$LOG_FILE"
+    for i in $(seq 1 30); do
+        if docker compose run --rm --no-deps api python -c \
+            "import socket; socket.getaddrinfo('api.oddspapi.io', 443)" >/dev/null 2>&1; then
+            return 0
+        fi
+        echo "no network yet (attempt $i/30); retrying in 60s" | tee -a "$LOG_FILE"
+        sleep 60
+    done
+    echo "ERROR: no network after 30 min — skipping OddsPapi, nothing spent" | tee -a "$LOG_FILE"
+    return 1
+}
+
+# Error text requests/urllib3 print when the network, not the API, failed.
+NET_ERROR='ConnectionError|NameResolutionError|Failed to resolve|Temporary failure in name resolution|Connection aborted|RemoteDisconnected|Max retries exceeded|Network is unreachable|timed out'
+
+# One OddsPapi step ($1: wednesday|saturday|tuesday); sets ODDS_STATUS. With
+# $2=retry, a run that failed on a network error is retried once after the
+# network is back (fixtures are cached and games already collected are
+# skipped, so a rerun spends only what the first run didn't).
+run_oddspapi() {
+    ODDS_STATUS=1
+    wait_for_network || return 0
+    local out
+    out=$(mktemp)
+    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl "$1" 2>&1 | redact | tee "$out" | tee -a "$LOG_FILE"
+    ODDS_STATUS=${PIPESTATUS[0]}
+    if [ "$ODDS_STATUS" -ne 0 ] && [ "${2:-}" = retry ] && grep -qE "$NET_ERROR" "$out"; then
+        echo "--- OddsPapi $1 failed on a network error; retrying once ---" | tee -a "$LOG_FILE"
+        if wait_for_network; then
+            docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl "$1" 2>&1 | redact | tee -a "$LOG_FILE"
+            ODDS_STATUS=${PIPESTATUS[0]}
+        fi
+    fi
+    rm -f "$out"
+}
+
 # Projections go on record before lines are collected (same order as the
 # NBA daily job). Never overwritten, so a rerun only adds what's missing.
 log_predictions() {
@@ -70,8 +112,8 @@ log_predictions() {
 if [ "$MODE" = lines ]; then
     log_predictions
     echo "--- OddsPapi: this week's fixtures, names, opening prop lines ---" | tee -a "$LOG_FILE"
-    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl wednesday 2>&1 | redact | tee -a "$LOG_FILE"
-    STATUS=${PIPESTATUS[0]}
+    run_oddspapi wednesday retry
+    STATUS=$ODDS_STATUS
 elif [ "$MODE" = prep ]; then
     echo "--- nflverse: schedule, injuries, depth charts (season $SEASON) ---" | tee -a "$LOG_FILE"
     docker compose run --rm backend python -m backend.ingest.nfl_nflverse \
@@ -79,8 +121,8 @@ elif [ "$MODE" = prep ]; then
     STATUS=${PIPESTATUS[0]}
     log_predictions
     echo "--- OddsPapi: retry games with no prop lines on Wednesday ---" | tee -a "$LOG_FILE"
-    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl saturday 2>&1 | redact | tee -a "$LOG_FILE"
-    [ "${PIPESTATUS[0]}" -eq 0 ] || echo "WARNING: OddsPapi Saturday retry failed (see above)" | tee -a "$LOG_FILE"
+    run_oddspapi saturday
+    [ "$ODDS_STATUS" -eq 0 ] || echo "WARNING: OddsPapi Saturday retry failed (see above)" | tee -a "$LOG_FILE"
 else
     echo "--- nflverse: schedule, player stats, snap counts, injuries, depth charts (season $SEASON) ---" | tee -a "$LOG_FILE"
     docker compose run --rm backend python -m backend.ingest.nfl_nflverse --no-backup \
@@ -109,8 +151,8 @@ else
     # Closing prop lines for last week's games. A failure here is logged but
     # doesn't fail the results job: stats and features are already in.
     echo "--- OddsPapi: closing prop lines for last week's games ---" | tee -a "$LOG_FILE"
-    docker compose run --rm --no-deps api python -m backend.ingest.odds_oddspapi_nfl tuesday 2>&1 | redact | tee -a "$LOG_FILE"
-    [ "${PIPESTATUS[0]}" -eq 0 ] || echo "WARNING: OddsPapi closing-line step failed (see above)" | tee -a "$LOG_FILE"
+    run_oddspapi tuesday
+    [ "$ODDS_STATUS" -eq 0 ] || echo "WARNING: OddsPapi closing-line step failed (see above)" | tee -a "$LOG_FILE"
     # Model vs. lines: logged projections against those closing lines and the
     # actual stats (reports/nfl_model_vs_lines.json). Local data only; no API calls.
     echo "--- model vs. closing lines report ---" | tee -a "$LOG_FILE"

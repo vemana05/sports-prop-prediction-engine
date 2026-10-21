@@ -262,7 +262,7 @@ export interface JobStatus {
   last_scheduled: string;
   next_scheduled: string;
   runs_logged: number;
-  outcome: "success" | "failed" | "running" | "never ran";
+  outcome: "success" | "success_with_errors" | "failed" | "running" | "never ran";
   log: string | null;
   started_at: string | null;
   finished_at: string | null;
@@ -270,6 +270,8 @@ export interface JobStatus {
   last_error: string | null;
   late: boolean;
 }
+
+export type QueueCategory = "game_logs" | "college" | "duplicate" | "team";
 
 export interface ApiUsage { name: string; limit: number; budget: number; used: number | null; last_call: string | null; note: string | null }
 
@@ -285,8 +287,10 @@ export interface DataSources {
   review_queue: {
     total: number;
     by_source: Record<string, number>;
+    by_category: Record<QueueCategory, number>;
+    category_labels: Record<QueueCategory, string>;
     truncated: boolean;
-    rows: { source: string; name: string; raw_id: string | null; reason: string; best_candidate: string | null; best_score: number | null; created_at: string | null; context: string | null }[];
+    rows: { source: string; name: string; raw_id: string | null; reason: string; best_candidate: string | null; best_score: number | null; created_at: string | null; context: string | null; category: QueueCategory }[];
   };
 }
 

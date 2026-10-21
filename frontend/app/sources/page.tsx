@@ -3,7 +3,7 @@
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDataSources } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { ApiUsage, DataSources, JobStatus } from "@/lib/types";
+import type { ApiUsage, DataSources, JobStatus, QueueCategory } from "@/lib/types";
 
 const when = (iso: string | null) =>
   iso
@@ -17,14 +17,16 @@ function duration(s: number | null) {
   return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
-function Dot({ tone, label }: { tone: "fresh" | "late" | "failed" | "idle"; label: string }) {
+type Tone = "fresh" | "late" | "warn" | "failed" | "idle";
+
+function Dot({ tone, label }: { tone: Tone; label: string }) {
   return (
     <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
       <span
         aria-hidden
         className={cn("h-2.5 w-2.5 rounded-full", {
           "bg-safe": tone === "fresh",
-          "bg-risky": tone === "late",
+          "bg-risky": tone === "late" || tone === "warn",
           "bg-danger": tone === "failed",
           "bg-muted": tone === "idle",
         })}
@@ -34,9 +36,18 @@ function Dot({ tone, label }: { tone: "fresh" | "late" | "failed" | "idle"; labe
   );
 }
 
-function jobTone(j: JobStatus): "fresh" | "late" | "failed" | "idle" {
+const OUTCOME_LABEL: Record<JobStatus["outcome"], string> = {
+  success: "Success",
+  success_with_errors: "Success with errors",
+  failed: "Failed",
+  running: "Running",
+  "never ran": "Never ran",
+};
+
+function jobTone(j: JobStatus): Tone {
   if (j.outcome === "failed") return "failed";
   if (j.late) return "late";
+  if (j.outcome === "success_with_errors") return "warn";
   if (j.outcome === "never ran" || j.outcome === "running") return "idle";
   return "fresh";
 }
@@ -113,8 +124,30 @@ function UsageCard({ u }: { u: ApiUsage }) {
   );
 }
 
+type QueueRow = DataSources["review_queue"]["rows"][number];
+
+function QueueTable({ rows }: { rows: QueueRow[] }) {
+  return (
+    <Table min={760} head={<><Th>Source</Th><Th>Name</Th><Th>Reason</Th><Th>Best candidate</Th><Th>Context</Th></>}>
+      {rows.map((r) => (
+        <tr key={`${r.source}-${r.raw_id}-${r.name}`}>
+          <Td className="font-mono text-xs">{r.source}</Td>
+          <Td>{r.name}</Td>
+          <Td className="text-muted">{r.reason}</Td>
+          <Td>{r.best_candidate ? <>{r.best_candidate}{r.best_score != null && <span className="num text-muted"> ({r.best_score})</span>}</> : "—"}</Td>
+          <Td className="text-muted">{r.context ?? when(r.created_at)}</Td>
+        </tr>
+      ))}
+    </Table>
+  );
+}
+
+const NOISE: QueueCategory[] = ["college", "duplicate", "team"];
+
 function Body({ d }: { d: DataSources }) {
   const q = d.review_queue;
+  const real = q.rows.filter((r) => r.category === "game_logs");
+  const noiseTotal = NOISE.reduce((n, c) => n + q.by_category[c], 0);
   return (
     <>
       <section aria-label="Alerts" className="mt-5 rounded-slip border border-border bg-panel p-5 sm:p-6">
@@ -140,7 +173,7 @@ function Body({ d }: { d: DataSources }) {
                 <div className="text-xs font-normal text-muted">{j.schedule}</div>
               </th>
               <Td>
-                <Dot tone={jobTone(j)} label={j.outcome === "success" ? "Success" : j.outcome === "failed" ? "Failed" : j.outcome === "running" ? "Running" : "Never ran"} />
+                <Dot tone={jobTone(j)} label={OUTCOME_LABEL[j.outcome]} />
                 {j.late && <div className="text-xs font-medium text-risky-ink">Late</div>}
               </Td>
               <Td>{when(j.started_at)}</Td>
@@ -202,18 +235,32 @@ function Body({ d }: { d: DataSources }) {
             <>{q.total} name{q.total === 1 ? "" : "s"} waiting: {Object.entries(q.by_source).map(([s, n]) => `${s} ${n}`).join(", ")}.{q.truncated && ` Showing the first ${q.rows.length}.`}</>
         }
       >
-        {q.rows.length > 0 && (
-          <Table min={760} head={<><Th>Source</Th><Th>Name</Th><Th>Reason</Th><Th>Best candidate</Th><Th>Context</Th></>}>
-            {q.rows.map((r) => (
-              <tr key={`${r.source}-${r.raw_id}-${r.name}`}>
-                <Td className="font-mono text-xs">{r.source}</Td>
-                <Td>{r.name}</Td>
-                <Td className="text-muted">{r.reason}</Td>
-                <Td>{r.best_candidate ? <>{r.best_candidate}{r.best_score != null && <span className="num text-muted"> ({r.best_score})</span>}</> : "—"}</Td>
-                <Td className="text-muted">{r.context ?? when(r.created_at)}</Td>
-              </tr>
-            ))}
-          </Table>
+        {q.total > 0 && (
+          <>
+            <h3 className="mt-6 font-display text-lg font-semibold">
+              {q.category_labels.game_logs} <span className="text-sm font-normal text-muted">{q.by_category.game_logs} · needs review</span>
+            </h3>
+            {real.length > 0 ? <QueueTable rows={real} /> : <p className="mt-2 text-sm text-muted">None.</p>}
+            {noiseTotal > 0 && (
+              <details className="mt-6">
+                <summary className="cursor-pointer font-display text-lg font-semibold">
+                  College, duplicate and team-name entries{" "}
+                  <span className="text-sm font-normal text-muted">
+                    college {q.by_category.college} · duplicates {q.by_category.duplicate} · team names {q.by_category.team} · not flagged
+                  </span>
+                </summary>
+                {NOISE.map((c) => {
+                  const rows = q.rows.filter((r) => r.category === c);
+                  return rows.length > 0 && (
+                    <div key={c} className="mt-4">
+                      <h4 className="text-sm font-medium">{q.category_labels[c]} <span className="text-muted">{q.by_category[c]}</span></h4>
+                      <QueueTable rows={rows} />
+                    </div>
+                  );
+                })}
+              </details>
+            )}
+          </>
         )}
       </Section>
     </>

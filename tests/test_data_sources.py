@@ -67,6 +67,32 @@ def test_parse_success_and_failed_logs(tmp_path):
     assert ds.parse_log(running, NOW)["outcome"] == "running"
 
 
+def test_success_with_errors(tmp_path):
+    # Every step exited 0, but a step logged an ERROR (the 2026-10-20 results run).
+    r = ds.parse_log(_log(tmp_path, "weekly_nfl_job_results_20261020_091056.log",
+                          "=== weekly_nfl_job (results) starting Tue Oct 20 09:10:56 EDT 2026 ===\n"
+                          "2026-10-20 16:51:23,496 ERROR ingest: odds_oddspapi_nfl: ('Connection aborted.', "
+                          "RemoteDisconnected('Remote end closed connection without response'))\n"
+                          "WARNING: OddsPapi closing-line step failed (see above)\n"
+                          "=== weekly_nfl_job (results) finished Tue Oct 20 12:51:25 EDT 2026 (exit 0) ===\n"), NOW)
+    assert r["outcome"] == "success_with_errors" and "OddsPapi" in r["last_error"]
+
+    tb = ds.parse_log(_log(tmp_path, "daily_odds_job_20261021_100414.log",
+                           "Traceback (most recent call last):\n  File \"x.py\", line 1\nValueError: boom\n"
+                           "=== d finished Wed Oct 21 10:30:00 EDT 2026 (predict exit 0, odds exit 0) ===\n"), NOW)
+    assert tb["outcome"] == "success_with_errors"
+
+    # A WARNING that mentions "failed" is not an error line.
+    warn = ds.parse_log(_log(tmp_path, "daily_odds_job_20261019_100000.log",
+                             "WARNING: NFL prediction logging failed\n"
+                             "=== d finished Mon Oct 19 10:05:00 EDT 2026 (predict exit 0, odds exit 0) ===\n"), NOW)
+    assert warn["outcome"] == "success"
+    # A nonzero exit is still plain failed.
+    bad = ds.parse_log(_log(tmp_path, "daily_odds_job_20261018_100000.log",
+                            "ERROR boom\n=== d finished Sun Oct 18 10:05:00 EDT 2026 (predict exit 0, odds exit 1) ===\n"), NOW)
+    assert bad["outcome"] == "failed"
+
+
 def test_last_scheduled():
     daily, tue, sat = ds.JOBS[0], ds.JOBS[3], ds.JOBS[1]
     assert ds.last_scheduled(daily, NOW).isoformat() == "2026-10-14T10:00:00-04:00"
@@ -154,10 +180,11 @@ def test_build_status(tmp_path, warehouses, monkeypatch):
     q = s["review_queue"]
     assert q["total"] == 2 and q["by_source"] == {"sleeper": 1, "oddspapi_nfl": 1}
     assert {r["name"] for r in q["rows"]} == {"Jon Doe", "Ward, Cameron"}
+    assert q["by_category"] == {"game_logs": 0, "college": 2, "duplicate": 0, "team": 0}  # neither has game logs
 
     flags = " | ".join(s["flags"])
     assert "Daily NBA: last run failed" in flags and "NFL prep (Saturday) is late" in flags
-    assert "odds_snapshots is stale" in flags and "2 unmatched player names" in flags
+    assert "odds_snapshots is stale" in flags and "unmatched" not in flags
 
 
 def test_usage_over_cap_and_missing_warehouse(tmp_path, warehouses, monkeypatch):
@@ -167,3 +194,45 @@ def test_usage_over_cap_and_missing_warehouse(tmp_path, warehouses, monkeypatch)
     assert s["warehouses"][0]["error"].endswith("not found")
     assert next(u for u in s["usage"] if u["name"] == "The Odds API")["used"] is None
     assert s["models"] == [] and all(j["outcome"] == "never ran" for j in s["jobs"])
+
+
+def test_norm_name_and_game_log_match():
+    assert ds._norm_name("Harrison Jr., Marvin") == ds._norm_name("Marvin Harrison Jr.") == "marvin harrison"
+    assert ds._norm_name("Rice, Sir'Jabari") == "sirjabari rice"
+    idx = {"ward": {"cam"}, "gainwell": {"kenny"}, "merritt": {"jacory"}, "davis": {"anthony"}}
+    assert ds._has_game_logs("cameron ward", idx)
+    assert ds._has_game_logs("kenneth gainwell", idx)
+    assert ds._has_game_logs("jacory merritt", idx)  # nflverse: Jacory Croskey-Merritt
+    assert not ds._has_game_logs("antoine davis", idx)
+    assert not ds._has_game_logs("cameron smith", idx)
+
+
+def test_review_queue_categories(tmp_path, warehouses, monkeypatch):
+    wh_path, nfl_path = warehouses
+    c = duckdb.connect(wh_path)
+    c.execute("INSERT INTO xref_review_queue VALUES "
+              "('nba_injuries', 'Sarr, Alexandre', '', 'no match', NULL, NULL, '2026-10-12', false), "
+              "('sleeper', 'Alexandre Sarr', '77', 'no match', NULL, NULL, '2026-10-11', false), "
+              "('sleeper', 'Boston Celtics', 'BOS', 'no match', 'Bol Bol', 0.68, '2026-10-10', false)")
+    c.execute("INSERT INTO nba_player_games (player_id_nba, player_name, game_id, game_date, season, ingested_at) "
+              "VALUES ('1642259', 'Alexandre Sarr', 'g1', '2025-10-22', '2025-26', '2025-10-23')")
+    c.close()
+    n = duckdb.connect(nfl_path)
+    n.execute("INSERT INTO nfl_oddspapi_fixtures (fixture_id, game_id, season, week, kickoff_utc, home_team, away_team) "
+              "VALUES ('fx2', '2026_07_TEN_CLE', 2026, 7, '2026-10-25 17:00:00+00', 'CLE', 'TEN')")
+    n.execute("INSERT INTO nfl_oddspapi_players VALUES ('fx2', '9', 'Ward, Cameron', NULL)")
+    n.execute("INSERT INTO nfl_player_weekly (player_id, player_name, season, week, game_id, ingested_at) "
+              "VALUES ('00-0040000', 'Cam Ward', 2026, 6, '2026_06_TEN_X', '2026-10-13')")
+    n.close()
+
+    s = ds.build_status(NOW, tmp_path / "nologs", wh_path, nfl_path, tmp_path / "nomodels")
+    q = s["review_queue"]
+    cats = [(r["source"], r["name"], r["category"]) for r in q["rows"]]
+    # Players with game logs come first; one per name, the repeat is a duplicate.
+    assert cats[:2] == [("nba_injuries", "Sarr, Alexandre", "game_logs"), ("oddspapi_nfl", "Ward, Cameron", "game_logs")]
+    assert ("sleeper", "Alexandre Sarr", "duplicate") in cats and ("oddspapi_nfl", "Ward, Cameron", "duplicate") in cats
+    assert ("sleeper", "Boston Celtics", "team") in cats and ("sleeper", "Jon Doe", "college") in cats
+    assert q["by_category"] == {"game_logs": 2, "college": 1, "duplicate": 2, "team": 1} and q["total"] == 6
+    assert set(q["category_labels"]) == set(q["by_category"])
+    # Only the players with game logs are flagged.
+    assert "2 unmatched player names with game logs waiting for review." in s["flags"]

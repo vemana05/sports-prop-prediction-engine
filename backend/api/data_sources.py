@@ -95,6 +95,9 @@ _STAMP = re.compile(r"_(\d{8}_\d{6})\.log$")
 _FINISHED = re.compile(r"=== .*? finished (.+?) \((.*?)\) ===")
 _EXIT = re.compile(r"exit (-?\d+)")
 _ERRORISH = re.compile(r"\bERROR\b|Traceback|Exception\b|\w+Error\b|(?i:\bfailed\b)")
+# Stricter than _ERRORISH (which also catches warnings that mention "failed"):
+# a run whose steps all exited 0 but logged one of these is "success with errors".
+_ERROR_LINE = re.compile(r"\bERROR\b|^\s*Traceback \(most recent call last\)")
 
 
 def _parse_date_cmd(s: str) -> datetime | None:
@@ -120,6 +123,8 @@ def parse_log(path: Path, now: datetime) -> dict:
     errors = [ln.strip() for ln in lines if _ERRORISH.search(ln)]
     if exits is not None:
         outcome = "success" if exits and all(e == 0 for e in exits) else "failed"
+        if outcome == "success" and any(_ERROR_LINE.search(ln) for ln in lines):
+            outcome = "success_with_errors"
     elif any(ln.startswith("ERROR") for ln in lines):
         outcome = "failed"
     else:
@@ -248,6 +253,72 @@ def oddspapi_usage(conn: duckdb.DuckDBPyConnection | None, now: datetime) -> dic
     return out
 
 
+_SUFFIX = re.compile(r"\b(jr|sr|ii|iii|iv|v)\b")
+_TEAM_CODE = re.compile(r"^[A-Z]{2,4}$")
+
+
+def _norm_name(name: str) -> str:
+    """'Harrison Jr., Marvin' and 'Marvin Harrison Jr.' -> 'marvin harrison'."""
+    if "," in name:
+        last, first = name.split(",", 1)
+        name = f"{first} {last}"
+    name = re.sub(r"[.'\u2019]", "", name.lower())
+    return " ".join(_SUFFIX.sub(" ", re.sub(r"[^a-z ]", " ", name)).split())
+
+
+def _game_log_index(conn: duckdb.DuckDBPyConnection | None, sql: str) -> dict[str, set[str]]:
+    """Last name -> first names of everyone with at least one game log."""
+    idx: dict[str, set[str]] = {}
+    if conn is None:
+        return idx
+    for (name,) in conn.execute(sql).fetchall():
+        parts = _norm_name(name or "").split()
+        if len(parts) >= 2:
+            idx.setdefault(parts[-1], set()).add(parts[0])
+    return idx
+
+
+def _has_game_logs(norm: str, idx: dict[str, set[str]]) -> bool:
+    """Same last name, and first names agree on their first four letters (or
+    all of the shorter one): Cam/Cameron and Kenny/Kenneth match, Antoine/Anthony don't."""
+    parts = norm.split()
+    if len(parts) < 2:
+        return False
+    first = parts[0]
+    for f in idx.get(parts[-1], ()):
+        k = min(4, len(f), len(first))
+        if k >= 2 and f[:k] == first[:k]:
+            return True
+    return False
+
+
+# Only "game_logs" rows are flagged: a real player with stats whose lines or
+# availability we can't join. The rest are expected noise.
+QUEUE_CATEGORIES = {
+    "game_logs": "Players with game logs",
+    "college": "College or never played (no game logs)",
+    "duplicate": "Duplicate of a name already listed",
+    "team": "Team names",
+}
+
+
+def _categorize(rows: list[dict], indexes: dict[str, dict[str, set[str]]]) -> None:
+    """Sets each row's category. Team codes first (Sleeper lists teams with a
+    letter id like 'BOS'), then a name already seen in the same league (e.g.
+    Sleeper and the injury report both listing one player), then game logs."""
+    seen: set[tuple[str, str]] = set()
+    for r in rows:
+        league = "nfl" if r["source"].endswith("_nfl") else "nba"
+        norm = _norm_name(r["name"])
+        if _TEAM_CODE.match(r["raw_id"] or ""):
+            r["category"] = "team"
+        elif (league, norm) in seen:
+            r["category"] = "duplicate"
+        else:
+            r["category"] = "game_logs" if _has_game_logs(norm, indexes[league]) else "college"
+        seen.add((league, norm))
+
+
 def review_queue(wh: duckdb.DuckDBPyConnection | None, nfl: duckdb.DuckDBPyConnection | None) -> dict:
     rows = []
     if wh is not None:
@@ -266,10 +337,19 @@ def review_queue(wh: duckdb.DuckDBPyConnection | None, nfl: duckdb.DuckDBPyConne
             rows.append({"source": "oddspapi_nfl", "name": name, "raw_id": raw_id,
                          "reason": "no single roster player on either team with this name", "best_candidate": None,
                          "best_score": None, "created_at": None, "context": f"{away} @ {home} ({game_id})"})
+    _categorize(rows, {
+        "nba": _game_log_index(wh, "SELECT DISTINCT player_name FROM nba_player_games"),
+        "nfl": _game_log_index(nfl, "SELECT DISTINCT player_name FROM nfl_player_weekly"),
+    })
     by_source: dict[str, int] = {}
+    by_category = {c: 0 for c in QUEUE_CATEGORIES}
     for r in rows:
         by_source[r["source"]] = by_source.get(r["source"], 0) + 1
-    return {"total": len(rows), "by_source": by_source, "rows": rows[:QUEUE_LIMIT], "truncated": len(rows) > QUEUE_LIMIT}
+        by_category[r["category"]] += 1
+    order = list(QUEUE_CATEGORIES)
+    rows.sort(key=lambda r: order.index(r["category"]))  # stable: newest first within a category
+    return {"total": len(rows), "by_source": by_source, "by_category": by_category, "category_labels": QUEUE_CATEGORIES,
+            "rows": rows[:QUEUE_LIMIT], "truncated": len(rows) > QUEUE_LIMIT}
 
 
 # ---- models ----------------------------------------------------------------------
@@ -340,8 +420,9 @@ def build_status(now: datetime | None = None, logs_dir: Path = LOGS_DIR, warehou
     for u in usage:
         if u["used"] is not None and u["used"] >= u["budget"]:
             flags.append(f"{u['name']}: {u['used']} used, at or over our {u['budget']} cap; collection is paused until the counter resets.")
-    if queue["total"]:
-        flags.append(f"{queue['total']} unmatched player name{'s' if queue['total'] != 1 else ''} waiting for review.")
+    n_real = queue["by_category"]["game_logs"]
+    if n_real:
+        flags.append(f"{n_real} unmatched player name{'s' if n_real != 1 else ''} with game logs waiting for review.")
 
     return {"as_of": now.isoformat(timespec="seconds"), "flags": flags, "jobs": jobs, "usage": usage,
             "warehouses": warehouses, "models": model_files(models_dir), "review_queue": queue}

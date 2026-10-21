@@ -29,6 +29,8 @@ services:
       - ./config:/app/config
       - ./reports:/app/reports
       - ./tests:/app/tests
+      # Read-only: tests/test_weekly_nfl_job.py runs a copy of the job script.
+      - ./scripts:/app/scripts:ro
       # Read-only: the Data Sources page reads job logs (backend/api/data_sources.py).
       - ./logs:/app/logs:ro
     ports:
