@@ -9,10 +9,9 @@ Predictions are logged once per (game, player, market) and never
 overwritten (model_predictions_log's primary key enforces this) — so a
 prediction can't quietly drift if this is re-run closer to tip-off.
 
-Roster source: `nba_current_form` — whoever last played for a team, from
-actual game logs, not a real depth chart. A player traded or signed since
-their last logged game won't show up under their new team yet; see that
-module's docstring for the full caveat.
+Roster source: `nba_current_form` with each player's current team from
+Sleeper (`current_team_by_player`), falling back to their last logged game
+for players Sleeper doesn't place — not a real depth chart.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ import pandas as pd
 from nba_api.stats.static import teams as nba_static_teams
 
 from backend.db import get_connection
-from backend.features.nba_current_form import build_current_form, teammates_out_from_injury_report
+from backend.features.nba_current_form import build_current_form, current_team_by_player, teammates_out_from_injury_report
 from backend.ingest.util import IngestResult, logger, utcnow
 from backend.models import nba_market_model as mm
 from backend.models import nba_minutes_model, nba_points_model
@@ -95,7 +94,9 @@ def run(conn: duckdb.DuckDBPyConnection | None = None) -> IngestResult:
         out_players_by_team: dict[str, list[str]] = {}
         for game_date in pd.to_datetime(games["tip_utc"]).dt.tz_convert("America/New_York").dt.date.unique():
             out_players_by_team.update(teammates_out_from_injury_report(conn, game_date))
-        current_form = build_current_form(conn, out_players_by_team=out_players_by_team)
+        current_form = build_current_form(
+            conn, out_players_by_team=out_players_by_team, team_by_player=current_team_by_player(conn)
+        )
         if current_form.empty:
             logger.warning("log_predictions: no current-form data available")
             return IngestResult(rows_written=0, notes={"error": "no current form"})

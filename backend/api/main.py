@@ -90,8 +90,12 @@ def _iso(dt) -> str | None:
 
 def _leg_json(leg: Leg) -> dict:
     game = SLATE.games.get(leg.game_id) or Game(leg.game_id, None, None, None)
-    is_home = game.home == leg.team if game.home else None
-    opponent = (game.away if is_home else game.home) if is_home is not None else None
+    # The leg pool places each player in their odds event and records the
+    # other team; never infer the opponent from a team the event doesn't have.
+    opponent, is_home = leg.opponent, leg.is_home
+    if opponent is None and game.home and leg.team in (game.home, game.away):
+        is_home = game.home == leg.team
+        opponent = game.away if is_home else game.home
     unit = MARKET_ABBR.get(leg.market, leg.market)
     return {
         "id": leg_id(leg),
@@ -184,6 +188,10 @@ def _slate_json() -> dict:
         "slate_date": _iso(SLATE.slate_date),
         "odds_pulled_at": _iso(SLATE.odds_pulled_at),
         "build_seconds": SLATE.build_seconds,
+        "unplaced": [
+            {"player_name": u.player_name, "team": u.team, "event_id": u.event_id, "event": u.event}
+            for u in SLATE.unplaced
+        ],
     }
 
 

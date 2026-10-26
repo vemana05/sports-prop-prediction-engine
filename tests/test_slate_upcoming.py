@@ -57,6 +57,7 @@ def stub_models(monkeypatch):
     monkeypatch.setattr(leg_pool, "teammates_out_from_injury_report", lambda conn, d: {})
     monkeypatch.setattr(leg_pool, "_points_predictions", lambda conn, ids, *a: {i: (20.0, 5.0) for i in ids})
     monkeypatch.setattr(leg_pool, "get_or_fit_calibrator", lambda conn, market: None)
+    monkeypatch.setattr(leg_pool, "current_team_by_player", lambda conn: dict(TEAM_BY_PLAYER))
     monkeypatch.setattr(
         leg_pool, "build_current_form",
         lambda conn, **kw: pd.DataFrame({"player_id_nba": list(TEAM_BY_PLAYER), "team": list(TEAM_BY_PLAYER.values())}),
@@ -73,7 +74,7 @@ def test_games_are_upcoming_only_and_matched_away_at_home(conn, stub_models):
     legs = leg_pool.build_leg_pool(conn, now=NOW)
     games, _ = _load_games(conn, legs, NOW)
     assert set(games) == {"ev_lal", "ev_bos", "ev_okc"}
-    # same tip time, told apart by the players' teams despite one stale team
+    # same tip time, told apart by the players' teams (the stale one is dropped)
     assert games["ev_lal"].label == "GSW @ LAL" and games["ev_lal"].nba_game_id == "0022600005"
     assert games["ev_bos"].label == "NYK @ BOS" and games["ev_bos"].nba_game_id == "0022600092"
     assert games["ev_okc"].label == "DEN @ OKC"

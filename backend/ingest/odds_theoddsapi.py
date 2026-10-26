@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 
 import duckdb
 import requests
+from nba_api.stats.static import teams as nba_static_teams
 
 from backend.db import get_connection
 from backend.ingest.util import IngestResult, logger, retry, utcnow
@@ -96,8 +97,27 @@ def fetch_event_player_points(conn: duckdb.DuckDBPyConnection, event_id: str) ->
     return resp.json()
 
 
+def _write_event_teams(conn: duckdb.DuckDBPyConnection, event: dict, now) -> None:
+    """The event's two teams, as abbreviations, into odds_events."""
+    abbr = {t["full_name"]: t["abbreviation"] for t in nba_static_teams.get_teams()}
+    home, away = abbr.get(event.get("home_team")), abbr.get(event.get("away_team"))
+    if not (event.get("id") and home and away):
+        logger.warning("odds_theoddsapi: event %s has unrecognized teams %r @ %r",
+                       event.get("id"), event.get("away_team"), event.get("home_team"))
+        return
+    conn.execute(
+        """
+        INSERT INTO odds_events VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (event_id) DO UPDATE SET commence_time = excluded.commence_time,
+            home_team = excluded.home_team, away_team = excluded.away_team, updated_at = excluded.updated_at
+        """,
+        [event["id"], event.get("commence_time"), home, away, now],
+    )
+
+
 def _write_snapshot(conn: duckdb.DuckDBPyConnection, event: dict) -> int:
     now = utcnow()
+    _write_event_teams(conn, event, now)
     rows = []
     event_id = event.get("id")
     commence_time = event.get("commence_time")

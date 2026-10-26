@@ -42,12 +42,12 @@ slate's first tip-off); for point-in-time tests against nba_features,
 `teammates_out_from_availability`. With neither, every team gets 0 out —
 the same value nba_features stores for a game where nobody was listed Out.
 
-Real limitation: this has no roster source beyond "who recently played for
-this team" (nba_player_games), so a player who changed teams since their
-last recorded game (trade, free agency, waived) shows up under their OLD
-team here until they've played at least one game for the new one. Good
-enough for forward prediction logging; not a substitute for a real
-depth-chart/roster feed.
+Team: by default a player's team is the one on their last logged game
+(nba_player_games), which is wrong for anyone who moved since (trade, free
+agency, waived). Live callers pass `team_by_player=current_team_by_player(conn)`
+— Sleeper's current team through player_xref, falling back to the last game
+log only for players Sleeper doesn't place. Point-in-time tests leave it
+unset, since Sleeper only knows today's rosters.
 """
 
 from __future__ import annotations
@@ -123,6 +123,28 @@ def teammates_out_from_injury_report(conn: duckdb.DuckDBPyConnection, game_date:
         if abbr:
             out.setdefault(abbr, []).append(pid)
     return out
+
+
+def current_team_by_player(conn: duckdb.DuckDBPyConnection) -> dict[str, str]:
+    """{player_id_nba: team abbreviation} as of now: Sleeper's team through
+    player_xref when Sleeper has one (Sleeper's NBA codes are the same
+    3-letter abbreviations nba_player_games uses), else the team on the
+    player's last logged game."""
+    rows = conn.execute(
+        """
+        WITH last_game AS (
+            SELECT player_id_nba, arg_max(team, game_date) AS team FROM nba_player_games GROUP BY 1
+        ),
+        sleeper AS (
+            SELECT x.player_id AS player_id_nba, s.team
+            FROM player_xref x JOIN sleeper_players s ON s.sleeper_id = x.sleeper_id
+            WHERE s.team IS NOT NULL
+        )
+        SELECT COALESCE(s.player_id_nba, l.player_id_nba), COALESCE(s.team, l.team)
+        FROM sleeper s FULL OUTER JOIN last_game l USING (player_id_nba)
+        """
+    ).fetchall()
+    return {pid: team for pid, team in rows if team}
 
 
 def _season_as_of(conn: duckdb.DuckDBPyConnection, as_of: date) -> str | None:
@@ -212,6 +234,8 @@ def build_current_form(
     as_of: date | None = None,
     opponent_by_team: dict[str, str] | None = None,
     out_players_by_team: dict[str, list[str]] | None = None,
+    team_by_player: dict[str, str] | None = None,
+    opponent_by_player: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """One row per player who has ever appeared in nba_player_games, with
     rolling-average features computed from their most recent games strictly
@@ -222,10 +246,16 @@ def build_current_form(
     opp_pace_roll10 / opp_def_vs_position_pts_roll10 for players whose team
     is a key — these two features are about an UPCOMING game, so without a
     known next opponent they're left NULL (LightGBM handles missing values
-    natively, same as nba_features.py's own NULLs for unmatched positions)."""
+    natively, same as nba_features.py's own NULLs for unmatched positions).
+
+    `team_by_player` overrides the last-game-log team (see module
+    docstring); `opponent_by_player` overrides `opponent_by_team` for a
+    player whose upcoming opponent is known from their own odds event."""
     as_of = as_of or date.today()
     opponent_by_team = opponent_by_team or {}
     out_players_by_team = out_players_by_team or {}
+    team_by_player = team_by_player or {}
+    opponent_by_player = opponent_by_player or {}
     games = conn.execute(
         """
         SELECT player_id_nba, player_name, team, opponent, season, game_date, game_id,
@@ -265,8 +295,8 @@ def build_current_form(
         # nba_availability.py's — see that module's test for the backstory).
         last_game_date = last["game_date"].date() if hasattr(last["game_date"], "date") else last["game_date"]
         rest_days = (as_of - last_game_date).days
-        team = last["team"]
-        opponent = opponent_by_team.get(team)
+        team = team_by_player.get(player_id) or last["team"]
+        opponent = opponent_by_player.get(player_id) or opponent_by_team.get(team)
         position_group = position_by_player.get(player_id)
 
         row = {

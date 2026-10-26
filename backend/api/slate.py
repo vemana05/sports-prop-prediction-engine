@@ -29,12 +29,11 @@ from pathlib import Path
 
 import duckdb
 import yaml
-from nba_api.stats.static import teams as nba_static_teams
 
 from backend.db import get_connection
 from backend.ingest.util import logger
 from backend.parlay.correlations import build_correlation_matrices
-from backend.parlay.leg_pool import build_leg_pool
+from backend.parlay.leg_pool import Unplaced, _schedule_for_days, build_leg_pool, match_events_to_schedule
 from backend.parlay.monte_carlo import Leg
 from backend.predict import early_season
 from backend.parlay.search import ParlayCandidate, SearchReport, filter_pool, leg_id, run_search
@@ -80,6 +79,7 @@ class Slate:
     legs_by_id: dict[str, Leg] = field(default_factory=dict)
     early: dict = field(default_factory=dict)  # early_season.status() as of the build
     built_day: date | None = None  # ET date the build ran on
+    unplaced: list[Unplaced] = field(default_factory=list)  # odds players not in their event's two teams
     _checked_at: float = 0.0
     _search_cache: dict[tuple, tuple[list[ParlayCandidate], SearchReport]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -116,7 +116,8 @@ class Slate:
         try:
             conn = get_connection()
             try:
-                legs = build_leg_pool(conn, now=now)
+                unplaced: list[Unplaced] = []
+                legs = build_leg_pool(conn, now=now, unplaced=unplaced)
                 corr = build_correlation_matrices(conn)
                 games, pulled_at = _load_games(conn, legs, now)
                 early = early_season.status(conn=conn)
@@ -129,6 +130,7 @@ class Slate:
             return
 
         self.legs, self.corr, self.games, self.odds_pulled_at, self.early = legs, corr, games, pulled_at, early
+        self.unplaced = unplaced
         self.legs_by_id = {leg_id(leg): leg for leg in legs}
         self._search_cache = {}
         self.built_at, self.build_seconds = time.time(), round(time.time() - t0, 1)
@@ -190,8 +192,8 @@ def _load_games(
     """Matchup + tip time for every upcoming game in the odds pool, keyed
     the same way `Leg.game_id` is (nba game_id when resolved, else the odds
     event_id). Odds events are rarely resolved to an nba game_id, so
-    unresolved ones are matched to nba_schedule here (`_match_schedule`)."""
-    id_to_abbr = {str(t["id"]): t["abbreviation"] for t in nba_static_teams.get_teams()}
+    unresolved ones are matched to nba_schedule here (`_match_schedule`);
+    an unmatched event still gets its teams from odds_events when known."""
     events = conn.execute(
         """
         SELECT COALESCE(game_id_nba, event_id), any_value(game_id_nba), min(commence_time)
@@ -202,54 +204,34 @@ def _load_games(
         [now],
     ).fetchall()
     days = sorted({tip.astimezone(ET).date() for _, _, tip in events if tip})
-    schedule = [
-        (gid, id_to_abbr.get(home), id_to_abbr.get(away), tip)
-        for gid, home, away, tip in conn.execute(
-            "SELECT game_id, home_team_id, away_team_id, tip_utc FROM nba_schedule WHERE game_date IN (SELECT unnest(?))",
-            [days],
-        ).fetchall()
-    ] if days else []
+    schedule = _schedule_for_days(conn, days)
     matched = _match_schedule(events, schedule, legs)
     sched_by_id = {s[0]: s for s in schedule}
+    event_teams = dict(
+        (ev, (home, away))
+        for ev, home, away in conn.execute("SELECT event_id, home_team, away_team FROM odds_events").fetchall()
+    )
     games = {}
     for gid, _, tip in events:
         s = sched_by_id.get(matched.get(gid))
-        games[gid] = Game(gid, s[1], s[2], tip, s[0]) if s else Game(gid, None, None, tip)
+        if s:
+            games[gid] = Game(gid, s[1], s[2], tip, s[0])
+        else:
+            home, away = event_teams.get(gid, (None, None))
+            games[gid] = Game(gid, home, away, tip)
     pulled_at = conn.execute("SELECT max(pulled_at) FROM odds_snapshots WHERE market = 'player_points'").fetchone()[0]
     return games, pulled_at
 
 
 def _match_schedule(events: list[tuple], schedule: list[tuple], legs: list[Leg]) -> dict[str, str]:
-    """{event game key: nba game_id}. A resolved game_id_nba wins; otherwise
-    the scheduled game on the same ET date whose two teams cover the most of
-    the event's players, ties broken by the closer tip time. A player's team
-    comes from his last game log, so a few are stale (offseason moves) —
-    hence "most", not "all". Each scheduled game is used at most once."""
+    """{event game key: nba game_id}, via `match_events_to_schedule` with
+    each event's legs' teams. Leg teams are current (Sleeper) and already
+    checked against the event, so they place the event reliably."""
     players: dict[str, dict[str, str]] = {}
     for leg in legs:
         if leg.team:
             players.setdefault(leg.game_id, {})[leg.player_id_nba] = leg.team
-    out: dict[str, str] = {}
-    scored = []
-    for gid, nba_id, tip in events:
-        if nba_id:
-            out[gid] = nba_id
-            continue
-        if tip is None:
-            continue
-        teams = list(players.get(gid, {}).values())
-        for sid, home, away, stip in schedule:
-            if stip is None or stip.astimezone(ET).date() != tip.astimezone(ET).date():
-                continue
-            hits = sum(t in (home, away) for t in teams)
-            if hits:
-                scored.append((-hits, abs((stip - tip).total_seconds()), gid, sid))
-    used = set(out.values())
-    for _, _, gid, sid in sorted(scored):
-        if gid not in out and sid not in used:
-            out[gid] = sid
-            used.add(sid)
-    return out
+    return match_events_to_schedule(events, schedule, {gid: list(p.values()) for gid, p in players.items()})
 
 
 SLATE = Slate()

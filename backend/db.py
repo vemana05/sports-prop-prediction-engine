@@ -235,6 +235,28 @@ CREATE TABLE IF NOT EXISTS odds_snapshots (
     PRIMARY KEY (pulled_at, event_id, player_name_raw, market, bookmaker)
 );
 
+-- The two teams of each odds event (The Odds API's home_team/away_team,
+-- as 3-letter abbreviations). A leg's team must be one of these and its
+-- opponent is the other (backend/parlay/leg_pool.py).
+CREATE TABLE IF NOT EXISTS odds_events (
+    event_id         VARCHAR PRIMARY KEY,
+    commence_time    TIMESTAMPTZ,
+    home_team        VARCHAR,
+    away_team        VARCHAR,
+    updated_at       TIMESTAMP NOT NULL
+);
+
+-- Final scores and status of each scheduled game, refreshed by
+-- backend/ingest/nba_daily_games.py (gameStatus 3 = final).
+CREATE TABLE IF NOT EXISTS nba_game_results (
+    game_id          VARCHAR PRIMARY KEY,
+    season           VARCHAR NOT NULL,
+    game_status      INTEGER,
+    home_score       INTEGER,
+    away_score       INTEGER,
+    updated_at       TIMESTAMP NOT NULL
+);
+
 -- One row per call to The Odds API, straight from its own rate-limit
 -- headers (x-requests-used / x-requests-remaining) — this IS the credit
 -- budget guard's source of truth, not a locally-computed estimate, since

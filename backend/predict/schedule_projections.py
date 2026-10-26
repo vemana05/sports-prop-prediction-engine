@@ -48,7 +48,7 @@ from nba_api.stats.static import teams as nba_static_teams
 from scipy import stats
 
 from backend.db import DEFAULT_DB_PATH
-from backend.features.nba_current_form import build_current_form
+from backend.features.nba_current_form import build_current_form, current_team_by_player
 from backend.ingest.util import logger
 from backend.models import nba_minutes_model
 from backend.models.model_cache import get_or_train_booster
@@ -58,7 +58,7 @@ from backend.predict.log_predictions import MODEL_MAX_AGE_DAYS, _train_market, _
 
 ET = ZoneInfo("America/New_York")
 CACHE_DIR = Path("data/projections")
-CACHE_VERSION = 1
+CACHE_VERSION = 2  # 2: rosters use current (Sleeper) teams
 # Minutes has no fitted spread. For a Normal, MAE = sigma * sqrt(2/pi), so the
 # minutes model's walk-forward MAE (4.957, predictor_choice.py) implies this sigma.
 MINUTES_SIGMA = 4.957 * math.sqrt(math.pi / 2)
@@ -184,7 +184,9 @@ def compute(game_date: date, db_path: str | None = None) -> dict:
             h, a = abbr.get(str(g.home_team_id)), abbr.get(str(g.away_team_id))
             opponent_by_team[h], opponent_by_team[a] = a, h
 
-        form = build_current_form(conn, as_of=today_et(), opponent_by_team=opponent_by_team)
+        form = build_current_form(
+            conn, as_of=today_et(), opponent_by_team=opponent_by_team, team_by_player=current_team_by_player(conn)
+        )
         form = form[pd.to_datetime(form["last_game_date"]) >= pd.Timestamp(today_et() - timedelta(days=RECENT_DAYS))]
         pace = form.groupby("team")["team_pace_roll10"].first().dropna().sort_values(ascending=False)
         pace_rank = {t: i + 1 for i, t in enumerate(pace.index)}

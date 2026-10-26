@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import date
 
 import duckdb
 import pandas as pd
@@ -59,12 +60,17 @@ def _matchup_to_home_away_opponent(matchup: str) -> tuple[str, str]:
     return "home", matchup.split("vs.")[-1].strip()
 
 
-def fetch_player_game_logs_season(season: str, season_type: str = "Regular Season") -> pd.DataFrame:
+def fetch_player_game_logs_season(
+    season: str, season_type: str = "Regular Season", date_from: date | None = None
+) -> pd.DataFrame:
+    """`date_from` limits the call to games on/after that date (the daily
+    incremental refresh in nba_daily_games.py)."""
     def _call() -> pd.DataFrame:
         endpoint = leaguegamelog.LeagueGameLog(
             season=season,
             season_type_all_star=season_type,
             player_or_team_abbreviation="P",
+            date_from_nullable=date_from.strftime("%m/%d/%Y") if date_from else "",
             timeout=60,
         )
         return endpoint.get_data_frames()[0]

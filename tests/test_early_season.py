@@ -5,16 +5,23 @@ from datetime import date
 import duckdb
 
 from backend.parlay.search import _sanity_flags, score_parlay
-from backend.predict.early_season import EARLY_SEASON_GAMES, summarize, team_games_played
+from backend.predict.early_season import EARLY_SEASON_GAMES, games_missing_logs, summarize, team_games_played
 from tests.test_search import _leg, _zero_corr_matrices
 
 TIER = {"max_stake_pct_bankroll": 0.05}
 
 
-def _schedule(games: list[tuple[str, date, int, int]]) -> duckdb.DuckDBPyConnection:
+def _schedule(games: list[tuple[str, date, int, int]], logged: int | None = None) -> duckdb.DuckDBPyConnection:
+    """nba_schedule with `games`, plus nba_player_games logs for the first
+    `logged` of them (all by default) — one row per team per game."""
     conn = duckdb.connect(":memory:")
     conn.execute("CREATE TABLE nba_schedule (game_id VARCHAR, season VARCHAR, game_date DATE, home_team_id BIGINT, away_team_id BIGINT)")
+    conn.execute("CREATE TABLE nba_player_games (player_id_nba VARCHAR, team VARCHAR, game_id VARCHAR, game_date DATE, season VARCHAR)")
     conn.executemany("INSERT INTO nba_schedule VALUES (?, ?, ?, ?, ?)", [(f"g{i}", *g) for i, g in enumerate(games)])
+    abbr = {1610612738: "BOS", 1610612752: "NYK", 1610612747: "LAL"}
+    for i, (season, day, home, away) in enumerate(games[:logged]):
+        for team in (home, away):
+            conn.execute("INSERT INTO nba_player_games VALUES (?, ?, ?, ?, ?)", [f"p_{abbr[team]}", abbr[team], f"g{i}", day, season])
     return conn
 
 
@@ -34,6 +41,19 @@ def test_games_played_counts_this_season_before_today_and_counts_down():
     s = summarize(season, played)
     assert s["active"] and s["min_games_played"] == 1 and s["games_remaining"] == EARLY_SEASON_GAMES - 1
     assert s["teams_below"] == ["BOS", "LAL", "NYK"]
+
+
+def test_games_played_counts_only_games_whose_logs_are_loaded():
+    """Same data as the model's season features: a game that tipped but
+    whose logs aren't loaded yet doesn't count."""
+    bos, nyk, lal = 1610612738, 1610612752, 1610612747
+    conn = _schedule([
+        ("2026-27", date(2026, 10, 20), bos, nyk),
+        ("2026-27", date(2026, 10, 22), lal, bos),  # tipped, logs not loaded
+    ], logged=1)
+    season, played = team_games_played(conn, date(2026, 10, 23))
+    assert played == {"BOS": 1, "NYK": 1, "LAL": 0}
+    assert games_missing_logs(conn, season, date(2026, 10, 23)) == 1
 
 
 def test_window_closes_once_every_team_reaches_the_threshold():

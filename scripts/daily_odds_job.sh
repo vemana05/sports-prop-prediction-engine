@@ -68,6 +68,16 @@ docker compose run --rm backend python -m backend.ingest.injuries_nba_official -
 echo "--- refresh: Sleeper player status ---" | tee -a "$LOG_FILE"
 docker compose run --rm backend python -m backend.ingest.sleeper 2>&1 | redact | tee -a "$LOG_FILE"
 
+# Load finished games (player logs, schedule results, box status) and
+# rebuild nba_features BEFORE anything is predicted, so current form and
+# the early-season counter see last night's games. Resumable (skips games
+# already loaded) and waits for stats.nba.com DNS itself. Models are not
+# retrained here. A failure is logged and reported in the finish line, but
+# predictions and odds still run on whatever is loaded.
+echo "--- refresh: NBA game logs (finished games) + nba_features ---" | tee -a "$LOG_FILE"
+docker compose run --rm backend python -m backend.ingest.nba_daily_games 2>&1 | redact | tee -a "$LOG_FILE"
+GAMELOG_STATUS=${PIPESTATUS[0]}
+
 echo "--- step 0: warming schedule projections (next game day) ---" | tee -a "$LOG_FILE"
 docker compose run --rm backend python -m backend.predict.schedule_projections 2>&1 | redact | tee -a "$LOG_FILE"
 
@@ -79,8 +89,8 @@ echo "--- step 2/2: collecting odds ---" | tee -a "$LOG_FILE"
 docker compose run --rm backend python -m backend.ingest.odds_theoddsapi 2>&1 | redact | tee -a "$LOG_FILE"
 ODDS_STATUS=${PIPESTATUS[0]}
 
-echo "=== daily_odds_job finished $(date) (predict exit $PREDICT_STATUS, odds exit $ODDS_STATUS) ===" | tee -a "$LOG_FILE"
+echo "=== daily_odds_job finished $(date) (gamelogs exit $GAMELOG_STATUS, predict exit $PREDICT_STATUS, odds exit $ODDS_STATUS) ===" | tee -a "$LOG_FILE"
 
-if [ "$PREDICT_STATUS" -ne 0 ] || [ "$ODDS_STATUS" -ne 0 ]; then
+if [ "$GAMELOG_STATUS" -ne 0 ] || [ "$PREDICT_STATUS" -ne 0 ] || [ "$ODDS_STATUS" -ne 0 ]; then
     exit 1
 fi

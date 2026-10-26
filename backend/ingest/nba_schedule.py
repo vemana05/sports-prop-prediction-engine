@@ -30,8 +30,12 @@ def fetch_season_schedule(season: str) -> pd.DataFrame:
     df["season"] = season
     df["tip_utc"] = pd.to_datetime(df["gameDateTimeUTC"], utc=True)
     df["game_date"] = pd.to_datetime(df["gameDate"]).dt.date
-    return df[["gameId", "season", "game_date", "homeTeam_teamId", "awayTeam_teamId", "tip_utc"]].rename(
-        columns={"gameId": "game_id", "homeTeam_teamId": "home_team_id", "awayTeam_teamId": "away_team_id"}
+    # gameStatus (3 = final) and scores ride along for nba_daily_games.py's
+    # results table; _write below ignores them.
+    results = [c for c in ("gameStatus", "homeTeam_score", "awayTeam_score") if c in df.columns]
+    return df[["gameId", "season", "game_date", "homeTeam_teamId", "awayTeam_teamId", "tip_utc", *results]].rename(
+        columns={"gameId": "game_id", "homeTeam_teamId": "home_team_id", "awayTeam_teamId": "away_team_id",
+                 "gameStatus": "game_status", "homeTeam_score": "home_score", "awayTeam_score": "away_score"}
     )
 
 

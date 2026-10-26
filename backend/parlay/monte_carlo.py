@@ -52,6 +52,8 @@ class Leg:
     over_price: float | None = None
     under_price: float | None = None
     calibrator: Any | None = None  # fitted IsotonicRegression (backend.models.calibration), or None to skip calibration
+    opponent: str | None = None  # the other team in this leg's odds event (backend.parlay.leg_pool)
+    is_home: bool | None = None
 
     @property
     def distribution(self) -> str:
