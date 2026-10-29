@@ -29,6 +29,14 @@ export PATH="/Users/vemana/.docker/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 # Same requirements as the daily job: Docker Desktop running and the Mac
 # awake at the scheduled time (see com.parlaybuilder.weeklynfljob.plist).
 
+# Keep the Mac awake until the job finishes: re-run this script under
+# `caffeinate -i` (idle sleep blocked while it runs), once. Absent outside
+# macOS (e.g. the test container), where it just runs as is.
+if [ -z "${PARLAY_CAFFEINATED:-}" ] && command -v caffeinate >/dev/null 2>&1; then
+    export PARLAY_CAFFEINATED=1
+    exec caffeinate -i /bin/bash "$0" "$@"
+fi
+
 set -uo pipefail
 cd "$(dirname "$0")/.."
 

@@ -57,6 +57,7 @@ JOBS = [
     Job("nfl_prep", "NFL prep (Saturday)", "weekly_nfl_job_prep_", 5, 9, "weekly_nfl_job.sh prep"),
     Job("nfl_lines", "NFL lines (Wednesday)", "weekly_nfl_job_lines_", 2, 9, "weekly_nfl_job.sh lines"),
     Job("nfl_results", "NFL results (Tuesday)", "weekly_nfl_job_results_", 1, 9, "weekly_nfl_job.sh results"),
+    Job("nba_gamelog_retry", "NBA game-log retry", "nba_gamelog_retry_", None, 13, "nba_gamelog_retry_job.sh"),
 ]
 
 # Expected refresh cadence in days for tables a scheduled job writes; the

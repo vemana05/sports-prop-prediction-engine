@@ -9,6 +9,10 @@ Predictions are logged once per (game, player, market) and never
 overwritten (model_predictions_log's primary key enforces this) — so a
 prediction can't quietly drift if this is re-run closer to tip-off.
 
+Each row records `features_through`, the newest game date in the game logs
+the features were built from: when the morning game-log refresh fails, the
+day's predictions run on stale features, and evaluation can drop them.
+
 Roster source: `nba_current_form` with each player's current team from
 Sleeper (`current_team_by_player`), falling back to their last logged game
 for players Sleeper doesn't place — not a real depth chart.
@@ -16,7 +20,7 @@ for players Sleeper doesn't place — not a real depth chart.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import duckdb
 import pandas as pd
@@ -64,6 +68,12 @@ def upcoming_games(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     ).fetchdf()
 
 
+def features_through(conn: duckdb.DuckDBPyConnection, as_of: date) -> date | None:
+    """Newest game date build_current_form(as_of=...) reads: it uses
+    nba_player_games strictly before `as_of`."""
+    return conn.execute("SELECT max(game_date) FROM nba_player_games WHERE game_date < ?", [as_of]).fetchone()[0]
+
+
 def _build_feature_rows(games: pd.DataFrame, current_form: pd.DataFrame) -> pd.DataFrame:
     team_abbrev = _team_id_to_abbrev()
     rows = []
@@ -94,8 +104,9 @@ def run(conn: duckdb.DuckDBPyConnection | None = None) -> IngestResult:
         out_players_by_team: dict[str, list[str]] = {}
         for game_date in pd.to_datetime(games["tip_utc"]).dt.tz_convert("America/New_York").dt.date.unique():
             out_players_by_team.update(teammates_out_from_injury_report(conn, game_date))
+        as_of = date.today()  # build_current_form's own default, made explicit for features_through
         current_form = build_current_form(
-            conn, out_players_by_team=out_players_by_team, team_by_player=current_team_by_player(conn)
+            conn, as_of=as_of, out_players_by_team=out_players_by_team, team_by_player=current_team_by_player(conn)
         )
         if current_form.empty:
             logger.warning("log_predictions: no current-form data available")
@@ -124,21 +135,24 @@ def run(conn: duckdb.DuckDBPyConnection | None = None) -> IngestResult:
             )
             market_models[name] = (model, extra["r"])
 
+        through = features_through(conn, as_of)
         now = utcnow()
         log_rows = []
         minutes_preds = minutes_model.predict(X)
         points_preds = points_model.predict(X)
         for i, frow in enumerate(feature_rows.itertuples()):
-            log_rows.append((now, frow.game_id, frow.player_id_nba, "minutes", float(minutes_preds[i]), None, MODEL_VERSION))
-            log_rows.append((now, frow.game_id, frow.player_id_nba, "points", float(points_preds[i]), points_sigma, MODEL_VERSION))
+            log_rows.append((now, frow.game_id, frow.player_id_nba, "minutes", float(minutes_preds[i]), None, MODEL_VERSION, through))
+            log_rows.append((now, frow.game_id, frow.player_id_nba, "points", float(points_preds[i]), points_sigma, MODEL_VERSION, through))
         for name, (model, r) in market_models.items():
             preds = model.predict(X)
             for i, frow in enumerate(feature_rows.itertuples()):
-                log_rows.append((now, frow.game_id, frow.player_id_nba, name, float(max(preds[i], 0)), r, MODEL_VERSION))
+                log_rows.append((now, frow.game_id, frow.player_id_nba, name, float(max(preds[i], 0)), r, MODEL_VERSION, through))
 
         conn.executemany(
             """
-            INSERT INTO model_predictions_log VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO model_predictions_log (predicted_at, game_id, player_id_nba, market, predicted_mean,
+                dispersion_param, model_version, features_through)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (game_id, player_id_nba, market) DO NOTHING
             """,
             log_rows,
@@ -147,7 +161,9 @@ def run(conn: duckdb.DuckDBPyConnection | None = None) -> IngestResult:
             "log_predictions: logged %d predictions (%d players x 5 markets) for %d games",
             len(log_rows), len(feature_rows), len(games),
         )
-        return IngestResult(rows_written=len(log_rows), notes={"games": len(games), "players": len(feature_rows)})
+        logger.info("log_predictions: features built from game logs through %s", through)
+        return IngestResult(rows_written=len(log_rows), notes={"games": len(games), "players": len(feature_rows),
+                                                               "features_through": str(through)})
     finally:
         if own_conn:
             conn.close()

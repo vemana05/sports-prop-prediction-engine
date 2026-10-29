@@ -14,8 +14,18 @@ export PATH="/Users/vemana/.docker/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 #   3. ODDS_API_KEY set in .env (odds_theoddsapi.py no-ops cleanly with a
 #      warning, not a crash, if it's missing — but no key means no odds).
 #
+# Runs under `caffeinate -i` (see below) so the Mac can't idle-sleep mid-job.
+#
 # Logs its own output to logs/daily_odds_job_<date>.log so a failure
 # overnight is visible the next time someone looks, not just lost.
+
+# Keep the Mac awake until the job finishes: re-run this script under
+# `caffeinate -i` (idle sleep blocked while it runs), once. Absent outside
+# macOS (e.g. the test container), where it just runs as is.
+if [ -z "${PARLAY_CAFFEINATED:-}" ] && command -v caffeinate >/dev/null 2>&1; then
+    export PARLAY_CAFFEINATED=1
+    exec caffeinate -i /bin/bash "$0" "$@"
+fi
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -73,10 +83,19 @@ docker compose run --rm backend python -m backend.ingest.sleeper 2>&1 | redact |
 # the early-season counter see last night's games. Resumable (skips games
 # already loaded) and waits for stats.nba.com DNS itself. Models are not
 # retrained here. A failure is logged and reported in the finish line, but
-# predictions and odds still run on whatever is loaded.
+# predictions and odds still run on whatever is loaded, and the step alone is
+# retried at 1 PM by nba_gamelog_retry_job.sh (it looks for RETRY_MARKER).
+# The step caps itself at ~10 min (nba_daily_games.STEP_BUDGET_S).
+RETRY_MARKER="logs/nba_gamelogs_retry_$(date +%Y%m%d)"
 echo "--- refresh: NBA game logs (finished games) + nba_features ---" | tee -a "$LOG_FILE"
 docker compose run --rm backend python -m backend.ingest.nba_daily_games 2>&1 | redact | tee -a "$LOG_FILE"
 GAMELOG_STATUS=${PIPESTATUS[0]}
+if [ "$GAMELOG_STATUS" -ne 0 ]; then
+    echo "game logs failed; $RETRY_MARKER left for the 1 PM retry" | tee -a "$LOG_FILE"
+    touch "$RETRY_MARKER"
+else
+    rm -f "$RETRY_MARKER"
+fi
 
 echo "--- step 0: warming schedule projections (next game day) ---" | tee -a "$LOG_FILE"
 docker compose run --rm backend python -m backend.predict.schedule_projections 2>&1 | redact | tee -a "$LOG_FILE"

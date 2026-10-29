@@ -1,11 +1,14 @@
-"""scripts/daily_odds_job.sh: the NBA game-log step runs after the DNS wait
-and before anything is predicted, its output is key-redacted, and a failure
-there is reported without stopping predictions or odds. Runs a copy of the
-script against fake `docker` and `sleep` commands; nothing real is started."""
+"""scripts/daily_odds_job.sh: runs under caffeinate, the NBA game-log step
+runs after the DNS wait and before anything is predicted, its output is
+key-redacted, and a failure there is reported without stopping predictions
+or odds and leaves a marker for the 1 PM retry. Runs a copy of the script
+against fake `docker`, `sleep` and `caffeinate` commands; nothing real is
+started."""
 
 import os
 import shutil
 import subprocess
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -28,6 +31,9 @@ case "$*" in
 esac
 """
 
+# Logs the call, then runs the wrapped command (`caffeinate -i cmd...`).
+FAKE_CAFFEINATE = "#!/bin/bash\necho \"caffeinate $*\" >> \"$CALLS\"\nshift\nexec \"$@\"\n"
+
 
 @pytest.fixture
 def job(tmp_path):
@@ -35,14 +41,16 @@ def job(tmp_path):
     shutil.copy(SCRIPT, tmp_path / "scripts" / SCRIPT.name)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name, body in (("docker", FAKE_DOCKER), ("sleep", "#!/bin/bash\necho \"sleep $*\" >> \"$CALLS\"\n")):
+    for name, body in (("docker", FAKE_DOCKER), ("sleep", "#!/bin/bash\necho \"sleep $*\" >> \"$CALLS\"\n"),
+                       ("caffeinate", FAKE_CAFFEINATE)):
         (bin_dir / name).write_text(body)
         (bin_dir / name).chmod(0o755)
     calls = tmp_path / "calls.txt"
 
     def run(gamelog_exit=0, dns_ok_after=0):
         calls.write_text("")
-        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "CALLS": str(calls), "SECRET": SECRET,
+        env = {k: v for k, v in os.environ.items() if k != "PARLAY_CAFFEINATED"}
+        env = {**env, "PATH": f"{bin_dir}:{os.environ['PATH']}", "CALLS": str(calls), "SECRET": SECRET,
                "GAMELOG_EXIT": str(gamelog_exit), "DNS_OK_AFTER": str(dns_ok_after)}
         p = subprocess.run(["bash", str(tmp_path / "scripts" / SCRIPT.name)], env=env,
                            capture_output=True, text=True, timeout=60)
@@ -81,3 +89,20 @@ def test_game_log_failure_is_reported_but_predictions_still_run(job):
     assert any("backend.predict.log_predictions" in ln for ln in calls)
     assert any("backend.ingest.odds_theoddsapi" in ln for ln in calls)
     assert "(gamelogs exit 1, predict exit 0, odds exit 0)" in log
+
+
+def _marker(tmp_path):
+    return tmp_path / "logs" / f"nba_gamelogs_retry_{date.today():%Y%m%d}"
+
+
+def test_runs_under_caffeinate_once(job):
+    _, calls, _ = job()
+    assert calls[0].startswith("caffeinate -i /bin/bash ") and calls[0].endswith("daily_odds_job.sh")
+    assert sum(ln.startswith("caffeinate") for ln in calls) == 1
+
+
+def test_game_log_failure_leaves_retry_marker_and_success_clears_it(job, tmp_path):
+    job(gamelog_exit=1)
+    assert _marker(tmp_path).exists()
+    job(gamelog_exit=0)
+    assert not _marker(tmp_path).exists()

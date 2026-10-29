@@ -1,10 +1,12 @@
 """backend/ingest/nba_daily_games.py against a stubbed nba_api: loads only
-finished games not already loaded, is resumable, waits for DNS, rebuilds
-nba_features, and keeps the early-season counter and the model's season
-features on the same game logs. No network: every nba_api endpoint is a
+finished games not already loaded, from the game-log endpoint even when the
+schedule call fails, is resumable, caps each call and the whole step in
+time, waits for DNS, rebuilds nba_features, and keeps the early-season
+counter and the model's season features on the same game logs. No network: every nba_api endpoint is a
 fake and real HTTP is blocked."""
 
 import json
+import time
 from datetime import date, datetime, timezone
 
 import pandas as pd
@@ -118,9 +120,10 @@ def test_loads_only_new_finished_games_then_rebuilds_features(conn, api):
     result = nba_daily_games.run(conn, now=NOW, wait_dns=False)
 
     assert result.notes["errors"] == []
-    assert api.calls[0] == ("schedule", "2026-27")
-    # One LeagueGameLog call, starting at the earliest missing finished game.
-    assert [c for c in api.calls if c[0] == "game_log"] == [("game_log", "2026-27", "10/21/2026")]
+    # Game logs first, from the day after the newest loaded game; the
+    # schedule call comes after, for results only.
+    assert api.calls[:2] == [("game_log", "2026-27", "10/21/2026"), ("schedule", "2026-27")]
+    assert api.count("game_log") == 1
     assert _game_ids(conn, "nba_player_games") == {"0022501200", "0022600001", "0022600002"}
     assert result.notes["log_rows"] == 2 and result.notes["log_games_still_pending"] == 1  # 0022600003
     # Box status fetched only for the newly logged game.
@@ -146,7 +149,8 @@ def test_rerun_is_resumable_and_skips_loaded_games(conn, api):
 
     api.calls.clear()
     result = nba_daily_games.run(conn, now=NOW, wait_dns=False)
-    assert api.count("game_log") == 0 and api.count("box") == 0
+    assert [c for c in api.calls if c[0] == "game_log"] == [("game_log", "2026-27", "10/23/2026")]
+    assert api.count("box") == 0
     assert result.rows_written == 0 and result.notes["features"] is None  # nothing new, features current
 
 
@@ -162,12 +166,71 @@ def test_failed_box_game_stays_pending_for_next_run(conn, api, monkeypatch):
     assert nba_daily_games.pending_box_games(conn, "2026-27") == ["0022600002"]
 
 
-def test_schedule_failure_falls_back_to_stored_schedule(conn, api, monkeypatch):
+def test_schedule_failure_still_loads_game_logs(conn, api, monkeypatch):
+    """2026-10-29: ScheduleLeagueV2 timed out, the stored schedule had no
+    finished games, and nothing was loaded. Game logs no longer need it."""
     monkeypatch.setattr(nba_schedule, "fetch_season_schedule", lambda season: (_ for _ in ()).throw(RuntimeError("down")))
-    monkeypatch.setattr(nba_daily_games, "features_behind", lambda conn: False)
     result = nba_daily_games.run(conn, now=NOW, wait_dns=False)
     assert result.notes["errors"] == ["schedule"]
-    assert result.notes["log_games_pending"] == 0  # only the already-loaded opener is on file
+    assert result.notes["log_games"] == 1 and result.notes["log_rows"] == 2
+    assert "0022600002" in _game_ids(conn, "nba_player_games")
+    assert [c for c in api.calls if c[0] == "box"] == [("box", "0022600002")]
+    assert "0022600002" in _game_ids(conn, "nba_features")
+    assert conn.execute("SELECT count(*) FROM nba_game_results").fetchone()[0] == 0  # results wait for the schedule
+
+
+def test_date_from_reaches_back_for_a_final_game_logged_late(conn):
+    # 10/22 is loaded, but the schedule says 10/21's game is final and it
+    # isn't: start there, not at 10/23.
+    conn.execute("INSERT INTO nba_schedule VALUES ('0022600002', '2026-27', '2026-10-21', ?, ?, '2026-10-22T02:30:00Z', now())",
+                 [str(LAL), str(BOS)])
+    conn.execute("INSERT INTO nba_game_results VALUES ('0022600002', '2026-27', 3, 110, 100, now())")
+    conn.execute(
+        """INSERT INTO nba_player_games (player_id_nba, player_name, team, opponent, game_id, game_date, season,
+               minutes, pts, reb, ast, fg3m, stl, blk, tov, fga, fgm, fta, ftm, oreb, dreb, ingested_at)
+           VALUES ('203', 'Luka Doncic', 'LAL', 'NYK', '0022600003', '2026-10-22', '2026-27',
+               30, 20, 5, 4, 2, 1, 0, 2, 15, 7, 4, 3, 1, 4, now())"""
+    )
+    assert nba_daily_games.log_date_from(conn, "2026-27", NOW) == date(2026, 10, 21)
+    conn.execute("DELETE FROM nba_game_results")  # no longer final on record: back to the day after the newest
+    conn.execute("UPDATE nba_schedule SET tip_utc = ? WHERE game_id = '0022600002'", [NOW])
+    assert nba_daily_games.log_date_from(conn, "2026-27", NOW) == date(2026, 10, 23)
+
+
+def test_slow_call_is_cut_off_and_the_rest_still_runs(conn, api, monkeypatch):
+    def slow_log(*a, **k):
+        api.calls.append(("game_log", "slow"))
+        time.sleep(2)
+        pytest.fail("should have been abandoned")
+
+    monkeypatch.setattr(nba_nbaapi.leaguegamelog, "LeagueGameLog", slow_log)
+    monkeypatch.setattr(nba_daily_games, "features_behind", lambda conn: False)
+    started = time.monotonic()
+    result = nba_daily_games.run(conn, now=NOW, wait_dns=False, budget=nba_daily_games.Budget(total_s=30, call_cap_s=0.2))
+    assert time.monotonic() - started < 1.5
+    assert result.notes["errors"] == ["player_games", "budget"]
+    assert api.count("schedule") == 1  # results still refreshed
+    assert result.notes["log_games_still_pending"] == 2  # 0022600002 and -03 wait for the next run
+
+
+def test_spent_budget_stops_calls_and_leaves_games_pending(conn, api, monkeypatch):
+    monkeypatch.setattr(nba_daily_games, "features_behind", lambda conn: False)
+    clock = iter([0.0] + [1000.0] * 50).__next__  # budget set at 0, every later check is past it
+    result = nba_daily_games.run(conn, now=NOW, wait_dns=False, budget=nba_daily_games.Budget(total_s=600, clock=clock))
+    assert api.calls == []
+    assert result.notes["errors"] == ["player_games", "budget", "schedule"]
+    assert result.rows_written == 0
+
+
+def test_budget_bounds_the_dns_wait():
+    sleeps = []
+    budget = nba_daily_games.Budget(total_s=12, clock=lambda: 0.0 + 5 * len(sleeps))
+
+    def resolve(host, port):
+        raise OSError("no network")
+
+    assert not nba_daily_games.wait_for_dns(resolve=resolve, sleep=sleeps.append, delay_s=5, budget=budget)
+    assert sleeps == [5, 5]  # 12s budget: a third 5s wait wouldn't fit
 
 
 def test_waits_for_dns_before_any_call(conn, api):
@@ -183,7 +246,7 @@ def test_waits_for_dns_before_any_call(conn, api):
 
 
 def test_no_dns_loads_nothing(conn, api, monkeypatch):
-    monkeypatch.setattr(nba_daily_games, "wait_for_dns", lambda: False)
+    monkeypatch.setattr(nba_daily_games, "wait_for_dns", lambda **k: False)
     result = nba_daily_games.run(conn, now=NOW)
     assert result.notes["errors"] == ["dns"] and api.calls == []
 

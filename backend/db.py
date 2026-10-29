@@ -286,6 +286,10 @@ CREATE TABLE IF NOT EXISTS model_predictions_log (
     model_version      VARCHAR,
     PRIMARY KEY (game_id, player_id_nba, market)
 );
+-- Newest game date in the game logs the features were built from, so
+-- predictions made on stale features (a failed game-log refresh) can be
+-- left out of evaluation. NULL on rows logged before this column existed.
+ALTER TABLE model_predictions_log ADD COLUMN IF NOT EXISTS features_through DATE;
 """
 )
 
