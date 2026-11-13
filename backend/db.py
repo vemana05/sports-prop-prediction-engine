@@ -103,6 +103,9 @@ ALTER TABLE nba_player_games ADD COLUMN IF NOT EXISTS fta DOUBLE;
 ALTER TABLE nba_player_games ADD COLUMN IF NOT EXISTS ftm DOUBLE;
 ALTER TABLE nba_player_games ADD COLUMN IF NOT EXISTS oreb DOUBLE;
 ALTER TABLE nba_player_games ADD COLUMN IF NOT EXISTS dreb DOUBLE;
+-- Where a row came from: NULL = stats.nba.com (LeagueGameLog), 'espn' = the
+-- ESPN fallback in backend/ingest/nba_espn.py.
+ALTER TABLE nba_player_games ADD COLUMN IF NOT EXISTS source VARCHAR;
 
 -- Possession-level data from pbpstats (live-data provider — see
 -- backend/ingest/nba_pbpstats.py for why: pbpstats' stats_nba and data_nba

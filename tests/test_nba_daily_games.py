@@ -15,7 +15,7 @@ import requests
 
 from backend.db import get_connection
 from backend.features.nba_current_form import build_current_form
-from backend.ingest import nba_box_status, nba_daily_games, nba_nbaapi, nba_schedule
+from backend.ingest import nba_box_status, nba_daily_games, nba_espn, nba_nbaapi, nba_schedule
 from backend.predict.early_season import games_missing_logs, team_games_played
 
 NOW = datetime(2026, 10, 23, 15, 0, tzinfo=timezone.utc)  # Fri 11 AM ET
@@ -86,6 +86,8 @@ def api(monkeypatch, tmp_path):
     monkeypatch.setattr(nba_box_status.boxscoretraditionalv3, "BoxScoreTraditionalV3", fake.box)
     monkeypatch.setenv("NBA_BOX_STATUS_CACHE_DIR", str(tmp_path / "box_cache"))
     monkeypatch.setattr(requests.Session, "send", lambda *a, **k: pytest.fail("real HTTP call attempted"))
+    # ESPN fallback sees no games unless a test asks for the `espn` fixture.
+    monkeypatch.setattr(nba_espn, "fetch_scoreboard", lambda day: {"events": []})
     return fake
 
 
@@ -197,7 +199,7 @@ def test_date_from_reaches_back_for_a_final_game_logged_late(conn):
     assert nba_daily_games.log_date_from(conn, "2026-27", NOW) == date(2026, 10, 23)
 
 
-def test_slow_call_is_cut_off_and_the_rest_still_runs(conn, api, monkeypatch):
+def test_slow_call_is_cut_off_and_stats_nba_com_skipped_for_the_run(conn, api, monkeypatch):
     def slow_log(*a, **k):
         api.calls.append(("game_log", "slow"))
         time.sleep(2)
@@ -208,9 +210,11 @@ def test_slow_call_is_cut_off_and_the_rest_still_runs(conn, api, monkeypatch):
     started = time.monotonic()
     result = nba_daily_games.run(conn, now=NOW, wait_dns=False, budget=nba_daily_games.Budget(total_s=30, call_cap_s=0.2))
     assert time.monotonic() - started < 1.5
-    assert result.notes["errors"] == ["player_games", "budget"]
-    assert api.count("schedule") == 1  # results still refreshed
-    assert result.notes["log_games_still_pending"] == 2  # 0022600002 and -03 wait for the next run
+    # The schedule call isn't tried after a cut-off one; ESPN (no games in
+    # this stub) stands in for both.
+    assert result.notes["errors"] == ["budget", "schedule"]
+    assert api.count("schedule") == 0
+    assert result.notes["espn"]["days"] == 3  # 10/21 through today
 
 
 def test_spent_budget_stops_calls_and_leaves_games_pending(conn, api, monkeypatch):
@@ -268,3 +272,117 @@ def test_early_season_counter_and_model_inputs_read_the_same_logs(conn, api):
         assert form.loc[pid, "games_played_prior_season"] == played[ABBR[team]]
     assert played == {"BOS": 2, "NYK": 1, "LAL": 1}  # 0022600003 tipped but isn't logged yet
     assert games_missing_logs(conn, season, as_of) == 1
+
+
+# ---- ESPN fallback (stats.nba.com unreachable) -----------------------------------
+
+ESPN_ABBR = {BOS: "BOS", NYK: "NY", LAL: "LAL"}  # ESPN spells the Knicks "NY"
+
+
+class FakeEspn:
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def scoreboard(self, day):
+        self.calls.append(("scoreboard", day.isoformat()))
+        events = []
+        for g, d, h, a, _, st in SCHEDULE:
+            if d != day.isoformat():
+                continue
+            events.append({"id": f"e{g[-3:]}", "status": {"type": {"completed": st == 3}}, "competitions": [{"competitors": [
+                {"homeAway": "home", "team": {"abbreviation": ESPN_ABBR[h]}, "score": "110"},
+                {"homeAway": "away", "team": {"abbreviation": ESPN_ABBR[a]}, "score": "100"}]}]})
+        return {"events": events}
+
+    def summary(self, event_id):
+        self.calls.append(("summary", event_id))
+        g = next(s for s in SCHEDULE if s[0].endswith(event_id[1:]))
+        keys = ["minutes", "points", "fieldGoalsMade-fieldGoalsAttempted",
+                "threePointFieldGoalsMade-threePointFieldGoalsAttempted", "freeThrowsMade-freeThrowsAttempted",
+                "rebounds", "assists", "turnovers", "steals", "blocks", "offensiveRebounds", "defensiveRebounds", "fouls"]
+        teams = []
+        for t in (g[2], g[3]):
+            athletes = [{"athlete": {"displayName": PLAYERS[t][1]}, "didNotPlay": False,
+                         "stats": ["34", "25", "9-18", "3-7", "4-6", "6", "5", "3", "1", "0", "1", "5", "2"]},
+                        {"athlete": {"displayName": "Bench Guy"}, "didNotPlay": True, "reason": "COACH'S DECISION", "stats": []},
+                        {"athlete": {"displayName": "Zzyzx Unknownrookie"}, "didNotPlay": False,
+                         "stats": ["5", "2", "1-1", "0-0", "0-0", "1", "0", "0", "0", "0", "0", "1", "0"]}]
+            teams.append({"team": {"abbreviation": ESPN_ABBR[t]}, "statistics": [{"keys": keys, "athletes": athletes}]})
+        return {"boxscore": {"players": teams}}
+
+
+@pytest.fixture
+def espn(monkeypatch):
+    fake = FakeEspn()
+    monkeypatch.setattr(nba_espn, "fetch_scoreboard", fake.scoreboard)
+    monkeypatch.setattr(nba_espn, "fetch_summary", fake.summary)
+    return fake
+
+
+@pytest.fixture
+def stats_down(api, monkeypatch):
+    """Every stats.nba.com endpoint hangs, as from this network since 2026-10-28."""
+    def hang(*a, **k):
+        api.calls.append(("hang",))
+        time.sleep(1)
+
+    for mod, name in ((nba_nbaapi.leaguegamelog, "LeagueGameLog"), (nba_schedule.scheduleleaguev2, "ScheduleLeagueV2"),
+                      (nba_box_status.boxscoretraditionalv3, "BoxScoreTraditionalV3")):
+        monkeypatch.setattr(mod, name, hang)
+    return api
+
+
+def _full_schedule(conn):
+    for gid, d, h, a, t, _ in SCHEDULE[1:]:
+        conn.execute("INSERT INTO nba_schedule VALUES (?, '2026-27', ?, ?, ?, ?, now())", [gid, d, str(h), str(a), t])
+
+
+def test_espn_fills_logs_and_results_when_stats_nba_com_hangs(conn, stats_down, espn):
+    _full_schedule(conn)
+    result = nba_daily_games.run(conn, now=NOW, wait_dns=False,
+                                 budget=nba_daily_games.Budget(total_s=60, call_cap_s=0.2))
+
+    # One stats.nba.com call times out; the schedule and box status calls are skipped, not waited on.
+    assert stats_down.calls == [("hang",)]
+    assert result.notes["errors"] == ["budget", "schedule"]  # game logs covered by ESPN
+    assert [c[1] for c in espn.calls if c[0] == "scoreboard"] == ["2026-10-21", "2026-10-22", "2026-10-23"]
+    assert {c[1] for c in espn.calls if c[0] == "summary"} == {"e002", "e003"}
+    rows = conn.execute("""SELECT game_id, player_id_nba, team, opponent, home_away, minutes, pts, fgm, fga, fg3m, ftm, fta, source
+                           FROM nba_player_games WHERE game_id = '0022600002' ORDER BY team""").fetchall()
+    assert rows[0] == ("0022600002", "201", "BOS", "LAL", "away", 34.0, 25.0, 9.0, 18.0, 3.0, 4.0, 6.0, "espn")
+    assert {r[2] for r in rows} == {"BOS", "LAL"}
+    assert "0022600003" in _game_ids(conn, "nba_player_games")  # NYK via ESPN's "NY"
+    assert result.notes["espn"]["unmatched"] == 4  # the unknown rookie, both teams, both games; DNPs not counted
+    finals = dict(conn.execute("SELECT game_id, game_status FROM nba_game_results").fetchall())
+    assert finals == {"0022600002": 3, "0022600003": 3}  # tonight's game isn't final
+    assert result.notes["box_skipped"] == 2 and result.notes["box_failed"] == 0
+    assert "0022600003" in _game_ids(conn, "nba_features")
+
+    # Next run starts after the ESPN-loaded games and doesn't re-load them.
+    espn.calls.clear()
+    nba_daily_games.run(conn, now=NOW, wait_dns=False, budget=nba_daily_games.Budget(total_s=60, call_cap_s=0.2))
+    assert [c for c in espn.calls if c[0] == "summary"] == []
+
+
+def test_espn_results_only_when_just_the_schedule_fails(conn, api, espn, monkeypatch):
+    _full_schedule(conn)
+    monkeypatch.setattr(nba_schedule, "fetch_season_schedule", lambda season: (_ for _ in ()).throw(RuntimeError("down")))
+    result = nba_daily_games.run(conn, now=NOW, wait_dns=False)
+    assert result.notes["errors"] == ["schedule"]
+    assert [c for c in espn.calls if c[0] == "summary"] == []  # LeagueGameLog worked; ESPN only for results
+    assert result.notes["espn"]["results"] == 2  # final on 10/21 and 10/22 (from the call's date_from)
+    assert dict(conn.execute("SELECT game_id, game_status FROM nba_game_results").fetchall()) == {"0022600002": 3, "0022600003": 3}
+
+
+def test_espn_not_used_when_stats_nba_com_works(conn, api, espn):
+    nba_daily_games.run(conn, now=NOW, wait_dns=False)
+    assert espn.calls == []
+
+
+def test_espn_box_rows_parse_and_skip():
+    summary = FakeEspn().summary("e002")
+    ids = {"jaylen brown": "201", "luka doncic": "203"}
+    df, unmatched = nba_espn.box_rows(summary, "0022600002", date(2026, 10, 21), "2026-27", "LAL", "BOS", ids)
+    assert sorted(df["player_id_nba"]) == ["201", "203"]
+    assert unmatched == ["Zzyzx Unknownrookie"] * 2
+    assert nba_espn.nba_abbr("GS") == "GSW" and nba_espn.nba_abbr("UTAH") == "UTA" and nba_espn.nba_abbr("BOS") == "BOS"

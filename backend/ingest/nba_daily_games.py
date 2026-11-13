@@ -19,6 +19,12 @@ up where it stopped:
   5. Rebuild nba_features if anything new was loaded or the features are
      behind the game logs. Models are NOT retrained here.
 
+When step 2 or 3 fails, ESPN's public scoreboard and box scores fill in
+results and player game logs for the same dates (backend/ingest/nba_espn.py;
+since 2026-10-28 stats.nba.com hangs from this network). After one
+stats.nba.com call is cut off, the rest of the run skips stats.nba.com
+rather than spend the budget waiting on it.
+
 Every stats.nba.com call (retries included) is capped at CALL_CAP_S and the
 whole step at STEP_BUDGET_S, so a slow API can't stall the daily job (the
 2026-10-29 run took 64 minutes). Whatever is cut off stays pending for the
@@ -42,7 +48,7 @@ import pandas as pd
 
 from backend.db import get_connection
 from backend.features import nba_features
-from backend.ingest import nba_availability, nba_box_status, nba_nbaapi, nba_schedule
+from backend.ingest import nba_availability, nba_box_status, nba_espn, nba_nbaapi, nba_schedule
 from backend.ingest.util import IngestResult, logger, utcnow
 
 ET = ZoneInfo("America/New_York")
@@ -183,6 +189,57 @@ def log_date_from(conn: duckdb.DuckDBPyConnection, season: str, now: datetime) -
     return min(starts) if newest is not None else None
 
 
+def espn_fallback(conn: duckdb.DuckDBPyConnection, season: str, start: date, end: date, budget: Budget,
+                  want_logs: bool) -> dict:
+    """Results (always) and, with `want_logs`, player game logs from ESPN
+    for finished games on [start, end] that are on the stored schedule.
+    Games already in nba_player_games are not re-loaded."""
+    loaded = set(conn.execute("SELECT DISTINCT game_id FROM nba_player_games WHERE season = ?", [season]).fetchdf()["game_id"])
+    ids = nba_espn.player_ids(conn) if want_logs else {}
+    now = utcnow()
+    out = {"days": 0, "results": 0, "games": 0, "rows": 0, "unmatched": [], "errors": 0, "unscheduled": 0}
+    day = start
+    while day <= end:
+        try:
+            finals = nba_espn.final_games(budget.call(lambda d=day: nba_espn.fetch_scoreboard(d), f"ESPN scoreboard {day}"))
+        except Exception as exc:  # noqa: BLE001 - the day stays pending for the next run
+            out["errors"] += 1
+            logger.warning("nba_daily_games ESPN: scoreboard %s failed: %s", day, exc)
+            day += timedelta(days=1)
+            continue
+        sched = nba_espn.schedule_games(conn, day)
+        results = []
+        for g in finals:
+            match = sched.get((g["home"], g["away"]))
+            if match is None or match[1] != season:
+                out["unscheduled"] += 1
+                continue
+            game_id, _ = match
+            results.append((game_id, season, g["home_score"], g["away_score"]))
+            if not want_logs or game_id in loaded:
+                continue
+            try:
+                summary = budget.call(lambda e=g["event_id"]: nba_espn.fetch_summary(e), f"ESPN summary {g['event_id']}")
+            except Exception as exc:  # noqa: BLE001 - the game stays pending for the next run
+                out["errors"] += 1
+                logger.warning("nba_daily_games ESPN: box score %s (%s) failed: %s", game_id, g["event_id"], exc)
+                continue
+            df, unmatched = nba_espn.box_rows(summary, game_id, day, season, g["home"], g["away"], ids)
+            out["rows"] += nba_espn.write_player_games(conn, df, now)
+            out["games"] += int(not df.empty)
+            out["unmatched"] += unmatched
+        out["results"] += nba_espn.write_results(conn, results, now) if results else 0
+        out["days"] += 1
+        day += timedelta(days=1)
+    if out["unmatched"]:
+        logger.warning("nba_daily_games ESPN: %d players matched no NBA id, skipped: %s",
+                       len(out["unmatched"]), ", ".join(sorted(set(out["unmatched"]))))
+    logger.info("nba_daily_games ESPN: %d results, %d player-game rows across %d games (%s to %s)",
+                out["results"], out["rows"], out["games"], start, end)
+    out["unmatched"] = len(out["unmatched"])
+    return out
+
+
 def pending_box_games(conn: duckdb.DuckDBPyConnection, season: str) -> list[str]:
     """This season's logged games with no nba_box_status rows."""
     return [
@@ -224,9 +281,14 @@ def run(
     errors: list[str] = []
     notes: dict = {"season": season}
 
+    stats_down = False  # set once a stats.nba.com call is cut off: skip the rest
+
     def out_of_time(exc: Exception) -> None:
-        if isinstance(exc, BudgetExceeded) and "budget" not in errors:
-            errors.append("budget")
+        nonlocal stats_down
+        if isinstance(exc, BudgetExceeded):
+            stats_down = True
+            if "budget" not in errors:
+                errors.append("budget")
 
     try:
         date_from = log_date_from(conn, season, now)
@@ -247,6 +309,8 @@ def run(
         notes["log_games"], notes["log_rows"] = new_games, log_rows
 
         try:
+            if stats_down:
+                raise BudgetExceeded("stats.nba.com unreachable this run, schedule skipped")
             sched = budget.call(lambda: nba_schedule.fetch_season_schedule(season), f"ScheduleLeagueV2({season})")
             nba_schedule._write(conn, sched)
             notes["results"] = _write_results(conn, sched)
@@ -255,29 +319,42 @@ def run(
             out_of_time(exc)
             logger.error("nba_daily_games: schedule refresh failed, results not updated: %s", exc)
 
+        logs_failed = "player_games" in errors
+        if logs_failed or "schedule" in errors:
+            start = date_from or conn.execute("SELECT min(game_date) FROM nba_schedule WHERE season = ?", [season]).fetchone()[0]
+            if start is not None:
+                espn = espn_fallback(conn, season, start, now.astimezone(ET).date(), budget, want_logs=logs_failed)
+                notes["espn"] = espn
+                log_rows += espn["rows"]
+                if logs_failed and espn["errors"] == 0:
+                    errors.remove("player_games")  # ESPN covered every finished game it could see
+
         still = pending_log_games(conn, season, now)
         notes["log_games_still_pending"] = len(still)
         logger.info(
-            "nba_daily_games: %d player-game rows across %d new games since %s (%d final per the schedule but not logged by stats.nba.com yet)",
-            log_rows, new_games, date_from, len(still),
+            "nba_daily_games: %d player-game rows since %s (%d games final on record but not logged yet)",
+            log_rows, date_from, len(still),
         )
 
         box_ids = pending_box_games(conn, season)
-        box_rows, failed = 0, []
+        box_rows, done, failed = 0, [], []
         for game_id in box_ids:
+            if stats_down:
+                break  # the rest stay pending for a run that can reach stats.nba.com
             try:
                 df = budget.call(lambda g=game_id: nba_box_status.fetch_game_roster(g), f"BoxScoreTraditionalV3({game_id})")
                 box_rows += nba_box_status._write(conn, df)
+                done.append(game_id)
             except Exception as exc:  # noqa: BLE001 - the game stays pending for the next run
                 failed.append(game_id)
                 out_of_time(exc)
                 logger.warning("nba_daily_games box status: giving up on %s: %s", game_id, exc)
         if failed:
             errors.append("box_status")
-        done = [g for g in box_ids if g not in set(failed)]
         if done:
             nba_availability.build(conn, game_ids=done)
         notes["box_games"], notes["box_failed"] = len(done), len(failed)
+        notes["box_skipped"] = len(box_ids) - len(done) - len(failed)
 
         if log_rows or box_rows or features_behind(conn):
             notes["features"] = nba_features.build(conn).rows_written
