@@ -323,6 +323,7 @@ export interface NbaModelVsLines {
   replay_rule?: string;
   min_sample?: number;
   box_scores_through?: string | null;
+  box_scores_stale_days?: number | null;
   books_used?: Record<string, number>;
   names?: { total: number; resolved: number; unresolved: string[] };
   coverage?: Record<string, number>;

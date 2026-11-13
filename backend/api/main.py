@@ -548,7 +548,23 @@ def nba_model_vs_lines() -> dict:
     path = REPORTS_DIR / "nba_model_vs_lines.json"
     if not path.exists():
         return {"available": False}
-    return {"available": True, **json.loads(path.read_text())}
+    report = json.loads(path.read_text())
+    return {"available": True, **report, "box_scores_stale_days": box_scores_stale_days(report.get("box_scores_through"))}
+
+
+# The page warns when the newest game log is older than this many days (ET).
+BOX_SCORES_STALE_AFTER_DAYS = 2
+
+
+def box_scores_stale_days(through: str | None, today: date | None = None) -> int | None:
+    """Days since the newest loaded game log when that's more than
+    BOX_SCORES_STALE_AFTER_DAYS before today (ET), else None. Checked at
+    request time, so it still fires when the report itself stops being rebuilt."""
+    if not through:
+        return None
+    today = today or datetime.now(data_sources.ET).date()
+    days = (today - date.fromisoformat(str(through)[:10])).days
+    return days if days > BOX_SCORES_STALE_AFTER_DAYS else None
 
 
 @app.get("/api/reports/{name}")

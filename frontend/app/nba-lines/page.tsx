@@ -185,6 +185,12 @@ function Body({ r }: { r: NbaModelVsLines }) {
   const rec = r.recommendation!;
   return (
     <>
+      {r.box_scores_stale_days != null && (
+        <p role="status" className="mt-5 rounded-slip border border-risky/40 bg-risky/10 p-4 text-sm text-risky-ink">
+          The newest game log is from {r.box_scores_through}, {r.box_scores_stale_days} days ago. Recent games can't be graded until
+          game logs load; check the daily job's game-log step (or it's a break in the schedule).
+        </p>
+      )}
       <section aria-label="Summary" className="mt-5 rounded-slip border border-border bg-panel p-5 sm:p-6">
         {!o.enough_sample && (
           <p className="mb-3 inline-flex rounded-full bg-risky/15 px-2.5 py-0.5 text-sm font-medium text-risky-ink">

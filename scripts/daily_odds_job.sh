@@ -97,6 +97,15 @@ else
     rm -f "$RETRY_MARKER"
 fi
 
+# Grade logged NBA points predictions against the lines and box scores
+# (reports/nba_model_vs_lines.json, the "NBA model vs. lines" page). Read-only
+# on the warehouse, and runs even if game logs failed (the page flags a stale
+# box-score date). A failure is reported in the finish line but doesn't stop
+# predictions or odds. Recommends a shrink/cap; nothing applies it.
+echo "--- grade: NBA model vs. lines ---" | tee -a "$LOG_FILE"
+docker compose run --rm backend python -m backend.backtest.nba_model_vs_lines 2>&1 | redact | tee -a "$LOG_FILE"
+GRADE_STATUS=${PIPESTATUS[0]}
+
 echo "--- step 0: warming schedule projections (next game day) ---" | tee -a "$LOG_FILE"
 docker compose run --rm backend python -m backend.predict.schedule_projections 2>&1 | redact | tee -a "$LOG_FILE"
 
@@ -108,8 +117,8 @@ echo "--- step 2/2: collecting odds ---" | tee -a "$LOG_FILE"
 docker compose run --rm backend python -m backend.ingest.odds_theoddsapi 2>&1 | redact | tee -a "$LOG_FILE"
 ODDS_STATUS=${PIPESTATUS[0]}
 
-echo "=== daily_odds_job finished $(date) (gamelogs exit $GAMELOG_STATUS, predict exit $PREDICT_STATUS, odds exit $ODDS_STATUS) ===" | tee -a "$LOG_FILE"
+echo "=== daily_odds_job finished $(date) (gamelogs exit $GAMELOG_STATUS, grade exit $GRADE_STATUS, predict exit $PREDICT_STATUS, odds exit $ODDS_STATUS) ===" | tee -a "$LOG_FILE"
 
-if [ "$GAMELOG_STATUS" -ne 0 ] || [ "$PREDICT_STATUS" -ne 0 ] || [ "$ODDS_STATUS" -ne 0 ]; then
+if [ "$GAMELOG_STATUS" -ne 0 ] || [ "$GRADE_STATUS" -ne 0 ] || [ "$PREDICT_STATUS" -ne 0 ] || [ "$ODDS_STATUS" -ne 0 ]; then
     exit 1
 fi

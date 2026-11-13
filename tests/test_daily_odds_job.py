@@ -1,7 +1,8 @@
 """scripts/daily_odds_job.sh: runs under caffeinate, the NBA game-log step
 runs after the DNS wait and before anything is predicted, its output is
-key-redacted, and a failure there is reported without stopping predictions
-or odds and leaves a marker for the 1 PM retry. Runs a copy of the script
+key-redacted, the NBA model-vs-lines grader runs right after it, and a
+failure in either is reported without stopping predictions or odds (a
+game-log failure also leaves a marker for the 1 PM retry). Runs a copy of the script
 against fake `docker`, `sleep` and `caffeinate` commands; nothing real is
 started."""
 
@@ -24,6 +25,8 @@ case "$*" in
   *socket.getaddrinfo*)
     n=$(grep -c getaddrinfo "$CALLS")
     [ "$n" -gt "${DNS_OK_AFTER:-0}" ] && exit 0 || exit 1 ;;
+  *nba_model_vs_lines*)
+    exit "${GRADE_EXIT:-0}" ;;
   *nba_daily_games*)
     echo "GET https://stats.nba.com/x?apiKey=$SECRET failed"
     exit "${GAMELOG_EXIT:-0}" ;;
@@ -47,11 +50,11 @@ def job(tmp_path):
         (bin_dir / name).chmod(0o755)
     calls = tmp_path / "calls.txt"
 
-    def run(gamelog_exit=0, dns_ok_after=0):
+    def run(gamelog_exit=0, dns_ok_after=0, grade_exit=0):
         calls.write_text("")
         env = {k: v for k, v in os.environ.items() if k != "PARLAY_CAFFEINATED"}
         env = {**env, "PATH": f"{bin_dir}:{os.environ['PATH']}", "CALLS": str(calls), "SECRET": SECRET,
-               "GAMELOG_EXIT": str(gamelog_exit), "DNS_OK_AFTER": str(dns_ok_after)}
+               "GAMELOG_EXIT": str(gamelog_exit), "GRADE_EXIT": str(grade_exit), "DNS_OK_AFTER": str(dns_ok_after)}
         p = subprocess.run(["bash", str(tmp_path / "scripts" / SCRIPT.name)], env=env,
                            capture_output=True, text=True, timeout=60)
         log = "".join(f.read_text() for f in sorted((tmp_path / "logs").glob("daily_odds_job_*.log")))
@@ -75,7 +78,7 @@ def test_game_logs_load_after_dns_and_before_predictions(job):
     assert gamelogs < _index(calls, "backend.predict.schedule_projections")
     assert gamelogs < _index(calls, "backend.predict.log_predictions")
     assert gamelogs < _index(calls, "backend.ingest.odds_theoddsapi")
-    assert "(gamelogs exit 0, predict exit 0, odds exit 0)" in log
+    assert "(gamelogs exit 0, grade exit 0, predict exit 0, odds exit 0)" in log
 
 
 def test_game_log_output_is_redacted(job):
@@ -88,7 +91,23 @@ def test_game_log_failure_is_reported_but_predictions_still_run(job):
     assert code == 1
     assert any("backend.predict.log_predictions" in ln for ln in calls)
     assert any("backend.ingest.odds_theoddsapi" in ln for ln in calls)
-    assert "(gamelogs exit 1, predict exit 0, odds exit 0)" in log
+    assert "(gamelogs exit 1, grade exit 0, predict exit 0, odds exit 0)" in log
+
+
+def test_grader_runs_right_after_game_logs_even_if_they_fail(job):
+    for gamelog_exit in (0, 1):
+        _, calls, _ = job(gamelog_exit=gamelog_exit)
+        grade = _index(calls, "backend.backtest.nba_model_vs_lines")
+        assert grade == _index(calls, "backend.ingest.nba_daily_games") + 1
+        assert grade < _index(calls, "backend.predict.schedule_projections")
+
+
+def test_grader_failure_is_reported_but_predictions_still_run(job):
+    code, calls, log = job(grade_exit=1)
+    assert code == 1
+    assert any("backend.predict.log_predictions" in ln for ln in calls)
+    assert any("backend.ingest.odds_theoddsapi" in ln for ln in calls)
+    assert "(gamelogs exit 0, grade exit 1, predict exit 0, odds exit 0)" in log
 
 
 def _marker(tmp_path):

@@ -258,4 +258,20 @@ def test_api_reports_unavailable_until_built(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "REPORTS_DIR", tmp_path)
     assert main.nba_model_vs_lines() == {"available": False}
     (tmp_path / "nba_model_vs_lines.json").write_text(json.dumps({"summary": ["x"]}))
-    assert main.nba_model_vs_lines() == {"available": True, "summary": ["x"]}
+    assert main.nba_model_vs_lines() == {"available": True, "summary": ["x"], "box_scores_stale_days": None}
+
+
+def test_box_scores_stale_only_after_two_days():
+    today = date(2026, 11, 13)
+    assert main.box_scores_stale_days(None, today) is None
+    assert main.box_scores_stale_days("2026-11-12", today) is None
+    assert main.box_scores_stale_days("2026-11-11", today) is None
+    assert main.box_scores_stale_days("2026-11-10", today) == 3
+    assert main.box_scores_stale_days("2026-11-01 00:00:00", today) == 12
+
+
+def test_api_flags_stale_box_scores(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "REPORTS_DIR", tmp_path)
+    old = (datetime.now(main.data_sources.ET).date() - timedelta(days=5)).isoformat()
+    (tmp_path / "nba_model_vs_lines.json").write_text(json.dumps({"box_scores_through": old}))
+    assert main.nba_model_vs_lines()["box_scores_stale_days"] == 5
