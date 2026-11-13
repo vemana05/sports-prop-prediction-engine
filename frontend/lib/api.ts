@@ -11,6 +11,7 @@ import type {
   Leg,
   LegPrice,
   ModelVsLines,
+  NbaModelVsLines,
   Parlay,
   ParlaysResponse,
   Performance,
@@ -130,6 +131,9 @@ export const useDataSources = () =>
 
 export const useModelVsLines = () =>
   useQuery({ queryKey: ["model-vs-lines"], queryFn: () => get<ModelVsLines>("/api/nfl/model-vs-lines"), staleTime: Infinity });
+
+export const useNbaModelVsLines = () =>
+  useQuery({ queryKey: ["nba-model-vs-lines"], queryFn: () => get<NbaModelVsLines>("/api/nba/model-vs-lines"), staleTime: Infinity });
 
 export const useBets = () => useQuery({ queryKey: ["bets"], queryFn: () => get<{ bets: Bet[] }>("/api/bets") });
 

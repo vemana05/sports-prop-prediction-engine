@@ -32,6 +32,7 @@ import yaml
 
 from backend.db import get_connection
 from backend.ingest.util import logger
+from backend.parlay import suggestion_log
 from backend.parlay.correlations import build_correlation_matrices
 from backend.parlay.leg_pool import Unplaced, _schedule_for_days, build_leg_pool, match_events_to_schedule
 from backend.parlay.monte_carlo import Leg
@@ -137,6 +138,22 @@ class Slate:
         self.built_day = now.astimezone(ET).date()
         self.status, self.error = "ready", None
         logger.info("slate ready: %d legs, %d games in %.1fs", len(legs), len(games), self.build_seconds)
+        self._log_suggestions(now)
+
+    def _log_suggestions(self, built_at: datetime) -> None:
+        """Run each tier's default search (cached, so requests reuse it) and
+        log what the Builder suggests. Never fails the build: if the
+        warehouse is locked by a job, this build's suggestions go unlogged."""
+        try:
+            results = {tier: self.search(tier)[0] for tier in load_tiers()}
+            conn = get_connection()
+            try:
+                n = suggestion_log.log_suggestions(conn, built_at, results, self.games, self.early_season)
+            finally:
+                conn.close()
+            logger.info("slate: logged %d suggested parlays", n)
+        except Exception:
+            logger.exception("slate: couldn't log suggested parlays")
 
     @property
     def early_season(self) -> bool:

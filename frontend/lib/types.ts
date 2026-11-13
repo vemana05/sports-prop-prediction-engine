@@ -254,6 +254,121 @@ export interface ModelVsLines {
   summary?: string[];
 }
 
+export interface NbaSide {
+  n: number;
+  hit_rate: number | null;
+  mean_model: number | null;
+  mean_book: number | null;
+  calibration_model: LinesBucket[];
+  calibration_book: LinesBucket[];
+  ece_model: number | null;
+  ece_book: number | null;
+}
+
+export interface NbaGap { lo: number; hi: number | null; n: number; hits: number; hit_rate: number | null; n_over: number; n_under: number; over_hit_rate: number | null; under_hit_rate: number | null }
+
+export interface NbaGroup {
+  n: number;
+  players: number;
+  model_side_hit_rate: number | null;
+  over_rate: number | null;
+  brier_model: number | null;
+  brier_book: number | null;
+  n_error: number;
+  mean_error: number | null;
+  mae: number | null;
+  mean_line_minus_actual: number | null;
+}
+
+export interface NbaParlayLeg { player_name: string; side: "over" | "under"; line: number; decimal_odds: number; p_hit: number | null; no_vig_p: number | null; actual: number | null; result: string }
+
+export interface NbaParlay {
+  date: string;
+  tier: string;
+  rank: number;
+  legs: NbaParlayLeg[];
+  p_hit: number;
+  p_sized: number | null;
+  no_vig_p: number | null;
+  decimal_odds: number;
+  flagged: boolean;
+  result: "won" | "lost" | "pending" | "reduced" | "void";
+}
+
+export interface NbaTierSummary {
+  suggested: number;
+  settled: number;
+  won: number;
+  pending: number;
+  reduced_or_void: number;
+  flagged: number;
+  claimed: number | null;
+  claimed_sized: number | null;
+  book: number | null;
+  actual: number | null;
+  profit: number | null;
+  clean_settled: number;
+  clean_claimed: number | null;
+  clean_actual: number | null;
+}
+
+export interface NbaParlaySet { tiers: Record<string, NbaTierSummary>; parlays: NbaParlay[] }
+
+export interface NbaModelVsLines {
+  available: boolean;
+  as_of?: string;
+  book_rule?: string;
+  features_rule?: string;
+  star_rule?: string;
+  replay_rule?: string;
+  min_sample?: number;
+  box_scores_through?: string | null;
+  books_used?: Record<string, number>;
+  names?: { total: number; resolved: number; unresolved: string[] };
+  coverage?: Record<string, number>;
+  overall?: {
+    graded: number;
+    pushes: number;
+    enough_sample: boolean;
+    brier_model: number | null;
+    brier_model_raw: number | null;
+    brier_book: number | null;
+    model_side_hit_rate: number | null;
+    model_side_n: number;
+    over: NbaSide;
+    under: NbaSide;
+    gap: NbaGap[];
+    stars: NbaGroup;
+    others: NbaGroup;
+  };
+  recommendation?:
+    | { available: false; n: number; reason: string }
+    | {
+        available: true;
+        n: number;
+        enough_sample: boolean;
+        shrink: number;
+        cap: number | null;
+        brier_before: number | null;
+        brier_after: number | null;
+        brier_book: number | null;
+        ece_before: number | null;
+        ece_after: number | null;
+        ece_book: number | null;
+        calibration_after: LinesBucket[];
+        runner_up: { shrink: number; cap: number | null; brier: number }[];
+      };
+  builder?: {
+    days: { date: string; build_at: string; props: number; early_season: boolean }[];
+    tiers: Record<string, NbaTierSummary>;
+    parlays: NbaParlay[];
+    adjusted: NbaParlaySet | null;
+    logged: NbaParlaySet;
+  };
+  other_markets?: string;
+  summary?: string[];
+}
+
 export interface JobStatus {
   key: string;
   label: string;

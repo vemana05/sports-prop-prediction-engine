@@ -10,7 +10,8 @@ const LINKS = [
   { href: "/replay", short: "Replay", long: "Replay" },
   { href: "/tracker", short: "Tracker", long: "Bet tracker" },
   { href: "/performance", short: "Model", long: "Model performance" },
-  { href: "/lines", short: "Lines", long: "Model vs. lines" },
+  { href: "/lines", short: "NFL lines", long: "NFL model vs. lines" },
+  { href: "/nba-lines", short: "NBA lines", long: "NBA model vs. lines" },
   { href: "/sources", short: "Sources", long: "Data sources" },
   { href: "/settings", short: "Settings", long: "Settings" },
 ];

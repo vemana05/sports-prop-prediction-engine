@@ -290,6 +290,29 @@ CREATE TABLE IF NOT EXISTS model_predictions_log (
 -- predictions made on stale features (a failed game-log refresh) can be
 -- left out of evaluation. NULL on rows logged before this column existed.
 ALTER TABLE model_predictions_log ADD COLUMN IF NOT EXISTS features_through DATE;
+
+-- Every NBA parlay the Builder suggests, logged when the slate is built
+-- (backend/parlay/suggestion_log.py): each tier's default search (both
+-- sides, nothing vetoed or switched off). Graded later by
+-- backend/backtest/nba_model_vs_lines.py. `legs` is a JSON list.
+CREATE TABLE IF NOT EXISTS nba_suggested_parlays_log (
+    built_at           TIMESTAMP NOT NULL,      -- UTC
+    tier               VARCHAR NOT NULL,
+    rank               INTEGER NOT NULL,        -- 1 = "Parlay A"
+    parlay_key         VARCHAR NOT NULL,        -- sorted leg ids joined by "|"
+    n_legs             INTEGER NOT NULL,
+    legs               VARCHAR NOT NULL,
+    p_hit              DOUBLE NOT NULL,         -- simulated hit chance the Builder shows
+    independent_p_hit  DOUBLE,
+    no_vig_p           DOUBLE,
+    p_sized            DOUBLE,
+    decimal_odds       DOUBLE NOT NULL,
+    ev_per_dollar      DOUBLE,
+    flagged            BOOLEAN NOT NULL,
+    flag_reasons       VARCHAR,
+    early_season       BOOLEAN,
+    PRIMARY KEY (built_at, tier, rank)
+);
 """
 )
 
